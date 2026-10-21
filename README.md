@@ -274,6 +274,27 @@ C:\Users\Admin\DeepSeek_Harness\git-repo\minimax2api\.venv\Scripts\python.exe sc
 
 后端目录解析顺序与插件 `lib/paths.js` 一致：`MINIMAX2API_DIR` → 指针 `~/.dsh/minimax2api.json` → 常见位置。
 
+#### 手工加一个账号（手机号 + 短信验证码）
+
+号池里加号走 `scripts/add_account_by_sms.py`——它替你发设备码、守授权、通知后端重载号池、领积分：
+
+```powershell
+cd C:\Users\Admin\DeepSeek_Harness\dsh-client-config\plugins\dsh-minimax-web-api
+C:\Users\Admin\DeepSeek_Harness\git-repo\minimax2api\.venv\Scripts\python.exe scripts\add_account_by_sms.py --phone 17653116208
+```
+
+输出会给出 `user_code` 与授权链接；你在浏览器里用短信码登录并授权后，脚本会
+自动把账号写进号池、通知后端重载（`/admin/api/keepalive/sweep`）、再领当日积分。
+
+两个坑（脚本与技能都绕过了）：
+
+- **设备码要在进程外发**。后端自己的 `POST /admin/api/login-device` 在**跑着的进程**里
+  会返回 500（同一段代码在进程外完全正常、重启后又正常一阵子）——上游的状态机缺陷。
+  脚本直接用后端自己的 `DeviceLoginService` 在自己的进程里做这件事。
+- **短信码有有效期，且会被限流**。拿到后尽快输；同一手机号连续失败多次会收到
+  `{"code":1000021,"message":"登陆失败，请稍后再试"}`——那不是验证码错，是节流，等几小时再试。
+
+浏览器端（勾协议、解滑块、填码、点登录）由 `captcha-slider-solve` 技能负责。
 #### 想让它自动每天跑
 
 **已经挂好了 Windows 计划任务**（每天 09:05，与后端自带签到调度同一时刻）：
@@ -449,3 +470,4 @@ smoke 全部 hermetic：不联网、不依赖本机后端、不读写真实指�
 - 后端**无鉴权**：`/v1` 与 `/admin/api/*` 对所有能连上端口的人开放。插件强制 `baseUrl` 只绑回环（`config_check.mjs` 会红）。
 - 凭据、Cookie、`bridge.sqlite3` 内容**绝不**写进日志或错误文本；本插件只记「账号数 / 可用数」这类计数。
 - 插件不新增任何远端、不上传任何数据。
+
