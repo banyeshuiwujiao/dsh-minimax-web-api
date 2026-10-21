@@ -32,7 +32,8 @@ export const REQUIRED_KEYS = Object.freeze([
   'requiredCapabilities',
   'minBackendVersion',
   'dailyCredits',
-  'creditIntervalMs',
+  'renewTokens',
+  'poolIntervalMs',
   'creditStateFile',
 ])
 

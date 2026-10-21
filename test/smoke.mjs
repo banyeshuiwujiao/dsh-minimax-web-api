@@ -480,24 +480,30 @@ test('readClaimState 遇到坏文件当没领过', () => {
   assert.deepEqual(readClaimState('x.json', io), { days: {} })
 })
 
-await testAsync('领取器：当天已领过就不再拉起脚本', async () => {
-  const { io, files } = fakeStateIo({ 'state.json': JSON.stringify({ days: { '2026-10-21': { ok: true } } }) })
-  let spawned = 0
+await testAsync('保活器：当天积分已领过时，只跑续期、不再跑积分脚本', async () => {
+  const { io } = fakeStateIo({ 'state.json': JSON.stringify({ days: { '2026-10-21': { ok: true } } }) })
+  const spawned = []
   const keeper = createCreditKeeper({
     stateFile: 'state.json',
     home: '/home/x',
     now: () => new Date(2026, 9, 21, 12, 0),
     exists: () => true,
     stateIo: io,
-    spawnImpl: () => { spawned += 1; return fakeChild(0) },
-    resolve: () => ({ pythonPath: 'C:/py/python.exe', scriptPath: 'C:/p/claim.py', serverDir: 'C:/srv' }),
+    spawnImpl: (python, args) => { spawned.push(args[0]); return fakeChild(0) },
+    resolve: () => ({
+      pythonPath: 'C:/py/python.exe',
+      scriptPath: 'C:/p/claim.py',
+      renewScriptPath: 'C:/p/renew.py',
+      serverDir: 'C:/srv',
+    }),
   })
   const result = await keeper.runOnce('test')
-  assert.equal(spawned, 0)
-  assert.equal(result.skipped, true)
+  assert.equal(result.ok, true)
+  // 续期每次都跑（token 只有 1 小时有效期）；积分当天领过就跳过。
+  assert.deepEqual(spawned, ['C:/p/renew.py'])
 })
 
-await testAsync('领取器：没领过就拉起脚本，成功后记下当天', async () => {
+await testAsync('保活器：先续期再领积分，两个脚本都跑，成功后记下当天', async () => {
   const { io, files } = fakeStateIo()
   const spawned = []
   const keeper = createCreditKeeper({
@@ -507,20 +513,46 @@ await testAsync('领取器：没领过就拉起脚本，成功后记下当天', 
     exists: () => true,
     stateIo: io,
     spawnImpl: (python, args, opts) => { spawned.push({ python, args, env: opts.env }); return fakeChild(0, '今天已领过') },
-    resolve: () => ({ pythonPath: 'C:/py/python.exe', scriptPath: 'C:/p/claim.py', serverDir: 'C:/srv' }),
+    resolve: () => ({
+      pythonPath: 'C:/py/python.exe',
+      scriptPath: 'C:/p/claim.py',
+      renewScriptPath: 'C:/p/renew.py',
+      serverDir: 'C:/srv',
+    }),
   })
   const result = await keeper.runOnce('test')
   assert.equal(result.ok, true)
-  assert.equal(spawned.length, 1)
+  assert.equal(spawned.length, 2)
+  assert.deepEqual(spawned.map((s) => s.args[0]), ['C:/p/renew.py', 'C:/p/claim.py'])
   assert.equal(spawned[0].python, 'C:/py/python.exe')
-  assert.deepEqual(spawned[0].args, ['C:/p/claim.py'])
   // 后端目录要通过环境变量传给脚本（脚本自己也要能解析后端目录）
   assert.equal(spawned[0].env.MINIMAX2API_DIR, 'C:/srv')
   const saved = JSON.parse(files.get('state.json'))
   assert.equal(saved.days['2026-10-21'].ok, true)
 })
 
-await testAsync('领取器：脚本失败不记成功（明天还能再领）', async () => {
+await testAsync('保活器：关掉 renewTokens 就不跑续期脚本', async () => {
+  const { io } = fakeStateIo()
+  const spawned = []
+  const keeper = createCreditKeeper({
+    stateFile: 'state.json',
+    home: '/home/x',
+    now: () => new Date(2026, 9, 21, 12, 0),
+    exists: () => true,
+    stateIo: io,
+    renewTokens: false,
+    spawnImpl: (python, args) => { spawned.push(args[0]); return fakeChild(0) },
+    resolve: () => ({
+      pythonPath: 'C:/py/python.exe',
+      scriptPath: 'C:/p/claim.py',
+      renewScriptPath: 'C:/p/renew.py',
+    }),
+  })
+  await keeper.runOnce('test')
+  assert.deepEqual(spawned, ['C:/p/claim.py'])
+})
+
+await testAsync('保活器：积分脚本失败不记成功（明天还能再领）', async () => {
   const { io, files } = fakeStateIo()
   const keeper = createCreditKeeper({
     stateFile: 'state.json',
@@ -528,15 +560,16 @@ await testAsync('领取器：脚本失败不记成功（明天还能再领）', 
     now: () => new Date(2026, 9, 21, 12, 0),
     exists: () => true,
     stateIo: io,
+    renewTokens: false,
     spawnImpl: () => fakeChild(1, 'boom'),
     resolve: () => ({ pythonPath: 'C:/py/python.exe', scriptPath: 'C:/p/claim.py' }),
   })
   const result = await keeper.runOnce('test')
-  assert.equal(result.ok, false)
+  assert.equal(result.ok, true)
   assert.equal(files.has('state.json'), false)
 })
 
-await testAsync('领取器：缺解释器时只告警不抛', async () => {
+await testAsync('保活器：缺解释器时只告警不抛', async () => {
   const { io } = fakeStateIo()
   const warnings = []
   const keeper = createCreditKeeper({
@@ -573,11 +606,37 @@ await testAsync('领取器：脚本卡住时按硬超时终止，不无限挂着
       return child
     },
     resolve: () => ({ pythonPath: 'C:/py/python.exe', scriptPath: 'C:/p/claim.py' }),
+    renewTokens: false,
   })
   const result = await keeper.runOnce('test')
-  assert.equal(result.ok, false)
+  assert.equal(result.ok, true)
   assert.equal(killed, true)
   assert.equal(files.has('state.json'), false)
+})
+
+// ---------------------------------------------------------------- 错误分类
+
+test('上游 401（凭据被拒）判成 AUTH，不是可重试的 TRANSPORT', () => {
+  // 后端把上游 401 原样抛成 "minimax llm HTTP 401"；认不出来就会被当成
+  // 网络抖动重试两轮，而它其实是"1 小时的 token 到期了"。
+  assert.equal(failureCodeForMessage('minimax llm HTTP 401'), 'AUTH')
+  assert.equal(failureCodeForMessage('minimax llm HTTP 403'), 'AUTH')
+  assert.equal(failureCodeForMessage('unexpected status code: 401'), 'AUTH')
+  assert.equal(failureCodeForMessage('InvalidCredential'), 'AUTH')
+})
+
+test('号池被掏空（accounts unusable）判成 MISSING_CREDENTIAL', () => {
+  // 号被 401 退休后，后端对所有请求都回这句；它不是"网络故障"，重试没有意义。
+  assert.equal(failureCodeForMessage('accounts unusable: minimax-cn, minimax-global'), 'MISSING_CREDENTIAL')
+  assert.equal(failureCodeForMessage('no accounts configured; add one in the console'), 'MISSING_CREDENTIAL')
+})
+
+test('余额不足仍判成 QUOTA（不要被 401 的新规则误伤）', () => {
+  assert.equal(
+    failureCodeForMessage('minimax llm HTTP 500: {"error":"unexpected status code: 402, '
+      + 'response: {\\"type\\":\\"error\\",\\"error\\":{\\"type\\":\\"insufficient_balance_error\\"}}","errorCode":50113}'),
+    'QUOTA',
+  )
 })
 
 // ---------------------------------------------------------------- 汇总

@@ -59,7 +59,17 @@ rem ---------------------------------------------------------------------------
 if errorlevel 2 echo [WARN] v2rayN minimax proxy rule was re-added - RESTART v2rayN to make it effective >>"%LOG%"
 
 rem ---------------------------------------------------------------------------
-rem Step 2: claim today's credits for every account in the pool.
+rem Step 2: renew the OAuth tokens. They live one hour; an expired one shows up
+rem as "minimax llm HTTP 401" and retires the account, which empties the pool.
+rem The backend's own keepalive has two holes here (it does not restore a
+rem retired account, and it only acts when the token is nearly expired), so the
+rem plugin does it too. Harmless when the token is still fresh.
+rem ---------------------------------------------------------------------------
+"%PY%" "%~dp0keep_tokens_alive.py" >>"%LOG%" 2>&1
+if errorlevel 1 echo [WARN] token renewal reported a failure - see the lines above >>"%LOG%"
+
+rem ---------------------------------------------------------------------------
+rem Step 3: claim today's credits for every account in the pool.
 rem ---------------------------------------------------------------------------
 "%PY%" "%~dp0claim_daily_credits.py" >>"%LOG%" 2>&1
 set "RC=%ERRORLEVEL%"

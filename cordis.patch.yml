@@ -61,7 +61,12 @@
         # 每日积分（签到）：插件随 DSH 客户端加载，客户端开着就保证当天领到。
         # 另有 Windows 计划任务（每天 09:05）作为第二道保险，两者跑同一个脚本。
         dailyCredits: true
-        # 复查间隔：启动时领一次，之后每 6 小时再确认一次当天是否真的领到。0 = 只在启动时领。
-        creditIntervalMs: 21600000
+        # token 续期：MiniMax 的 access token 只有 1 小时有效期，过期就是 401，
+        # 而后端自带 keepalive 有"续期成功但账号仍被退休、且没有快速恢复"的洞。
+        # 这里自己按间隔续期，并把被退休的账号复位。关掉就只剩后端的 keepalive。
+        renewTokens: true
+        # 复查间隔：30 分钟（token 有效期 1 小时，脚本内部按剩余 ≤20 分钟才续）。
+        # 0 = 只在插件启动时跑一次。
+        poolIntervalMs: 1800000
         # 领取状态文件（记每天的结果，避免同一天重复跑）。
         creditStateFile: '~/.dsh/minimax-web-api/claim-state.json'

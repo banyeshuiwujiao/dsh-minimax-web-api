@@ -101,6 +101,10 @@ $dst = Join-Path $env:USERPROFILE '.dsh\profiles\desktop\node_modules\dsh-minima
 New-Item -ItemType Directory -Force -Path $dst | Out-Null
 Copy-Item -Recurse -Force (Join-Path $src 'lib'), (Join-Path $src 'scripts'), (Join-Path $src 'package.json'), (Join-Path $src 'README.md') $dst
 
+# 脚本跑过之后会生成 __pycache__：它不是源码，不该进镜像（也会污染"多出来的文件"）。
+Get-ChildItem -Path (Join-Path $dst 'scripts') -Directory -Filter '__pycache__' -ErrorAction SilentlyContinue |
+  Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+
 # 逐文件比哈希：半复制/漏复制（比如新加了 lib/*.js 却没同步）都能当场发现。
 # scripts/ 也要校验：插件在运行时找不到 claim_daily_credits.py 就领不到积分，
 # 而这个缺失是静默的（只在日志里留一行 warn）。

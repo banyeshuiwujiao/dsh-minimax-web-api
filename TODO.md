@@ -182,6 +182,31 @@
 
 ---
 
+- [x] **P0-8 access token 只有 1 小时，过期即 401，且号池会僵死一小时**（2026-10-21 11:05 实测）。
+      真实 DSH 会话 `session-a26a2505-…` 三个回合全失败：先 `minimax llm HTTP 401`，
+      之后 `accounts unusable: minimax-cn, minimax-global`。
+      根因（读 `app/pool.py` + `app/keepalive.py` 得出）：
+      1) `pool._record_failure` 在 401 时先试续期，**但请求路径上的续期不复位账号状态**
+         （只有 `keepalive.renew_account` 的 `apply()` 会把 status 复位成 active）；
+         同一请求的重试/故障转移再打一次 → 又 401 → **续期成功的账号被"退休"**。
+      2) `keepalive.sweep` 只在 `token_expires_at - margin <= now` 时才动手，
+         而刚被退休的账号 token 还没到期 → `due=0` → 什么都不做 → **没有快速恢复**。
+      实测影响：11:05 两号全 401 → 被退休 → 之后 10 次请求全 accounts unusable，
+      整整一小时（到 token 自然到期）才可能自愈。
+      修复（插件侧）：
+      - 新增 `scripts/keep_tokens_alive.py`：复用后端 `Keeper.renew_account`
+        （成功即复位 status=active），在"剩余 ≤20 分钟"或"status=invalid"时动手；
+      - 插件启动时跑一次，之后每 30 分钟一次（`poolIntervalMs`）→ 客户端开着就不会过期；
+      - 错误分类：`minimax llm HTTP 401` → `AUTH`、`accounts unusable: ...` →
+        `MISSING_CREDENTIAL`（都不可重试；原先都落进 TRANSPORT 白重试两轮）。
+      **上游缺陷本身仍在**（第三方仓只读、不打补丁）：那条"续期成功但仍被退休"的
+      竞争、以及"退休后没有快速恢复"，都还在 `app/pool.py` / `app/keepalive.py` 里。
+      验收：号池空了时跑 `keep_tokens_alive.py --force` + 一次 sweep 即可恢复（实测已恢复）。
+      另注：后端**没有暴露**单账号续期路由（`server.py` 只有 status / sweep），
+      所以救急只能走 `sweep`（它顺带 `pool.load()`，但只动到期账号）。
+
+---
+
 ## 附：取证方法（下次排障直接抄）
 
 1. 会话转录是**每帧一条记录**的 zstd 拼接：`~/.dsh/sessions/--C-Users-Admin-DeepSeek-Harness--/session-<uuid>/session.v4.jsonl.zstd`。

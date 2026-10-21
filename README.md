@@ -310,6 +310,46 @@ minimax llm HTTP 500: {"error":"...unexpected status code: 402...
 （MiniMax 账号余额不足：给该账号充值，或在 http://127.0.0.1:4555/admin 换一个账号）
 ```
 
+### access token 只有 1 小时 —— 过期就是 401，账号还会被"退休"
+
+**这是最容易把人坑住的一条**：MiniMax 的 OAuth access token **只活 1 小时**，
+过期后上游一律回 401。而后端的失败处理（`app/pool.py`）是：
+
+```
+401 → 先试续期 → 续期成功就复用；续期失败才"退休"（status=invalid）
+```
+
+实测（2026-10-21 11:05，一次真实 DSH 会话）暴露两个洞：
+
+1. **续期成功了，账号却还是 `invalid`**。同一请求的重试/故障转移会再打一次，
+   第二次仍然 401（用的是旧 token，或与续期并发），于是**续期成功的账号又被退休**。
+   请求路径上的续期不复位状态（只有 `app/keepalive.py` 的 `renew_account` 会复位）。
+2. **号池空了没有快速恢复**。keepalive 的 sweep 只在"token 快到期"时才动手
+   （`token_expires_at - margin <= now`），而刚被退休的账号 token 还没到期 →
+   判定 `due=0` → 什么都不做 → 之后所有请求都是
+   `accounts unusable: minimax-cn, minimax-global`。
+
+实测影响：11:05 两个号全部 401 → 被退休 → 之后 10 次请求全是
+`accounts unusable`，**整整一小时**（直到 token 自然到期）才可能自愈。
+
+本插件的处理：
+
+- **主动续期**（`scripts/keep_tokens_alive.py`）：复用后端自己的
+  `Keeper.renew_account`（成功即把 `status` 复位成 `active`），
+  在"剩余 ≤20 分钟"或"状态是 invalid"时才动手。插件启动时跑一次，之后每 30 分钟一次
+  （`poolIntervalMs`）——只要 DSH 客户端开着，token 就不会过期。
+- **错误分类**：`minimax llm HTTP 401` → `AUTH`（不可重试），
+  `accounts unusable: ...` → `MISSING_CREDENTIAL`（不可重试）。
+  认不出来就会当成网络抖动重试两轮，而它俩重试一万次也一样。
+
+手工救活（号池已经空了的时候）：
+
+```powershell
+python scripts\keep_tokens_alive.py --force   # 全部续期 + 复位
+# 然后让后端重新加载号池：它没有暴露单账号续期路由，sweep 会顺带 pool.load()
+Invoke-RestMethod -Method Post http://127.0.0.1:4555/admin/api/keepalive/sweep
+```
+
 ---
 
 ## 配置项
@@ -324,6 +364,10 @@ minimax llm HTTP 500: {"error":"...unexpected status code: 402...
 | `defaultMaxTokens` | `32768` | 既向 DSH 申报单轮输出预留，也作为 `max_tokens` 传给后端 |
 | `streamIdleTimeoutMs` | `180000` | MiniMax 首 token 可能很慢，比 deepseek 那套的 120s 更宽 |
 | `strictBackend` | `true` | 为 `false` 时契约不符只告警不拒用 |
+| `dailyCredits` | `true` | 每日签到领积分（当天领过就跳过） |
+| `renewTokens` | `true` | 主动续期 1 小时有效的 OAuth token，并把被 401 退休的账号复位 |
+| `poolIntervalMs` | `1800000` | 保活复查间隔（30 分钟）。0 = 只在插件启动时跑一次 |
+| `creditStateFile` | `~/.dsh/minimax-web-api/claim-state.json` | 每日领取状态（避免同一天重复跑） |
 
 ---
 
@@ -331,9 +375,16 @@ minimax llm HTTP 500: {"error":"...unexpected status code: 402...
 
 ```powershell
 node test/config_check.mjs   # cordis.patch.yml 结构自检（缩进/必需键/回环/baseUrl）
-node test/smoke.mjs          # 28 个用例：纯函数、流式编排、路径解析、契约
-node test/preparecall_regression.mjs   # 真实 DSH LlmRuntime 集成（需本机运行时）
+node test/smoke.mjs          # 43 个用例：纯函数、流式编排、路径解析、契约、保活器、错误分类
+node test/preparecall_regression.mjs   # 真实 DSH LlmRuntime 装配（需本机运行时）
+node test/kernel_turn_regression.mjs   # 真实 DSH 内核整轮：出字 + 工具调用 + 多轮上下文 + usage
+node test/live_e2e.mjs       # 真实出字 + 真实工具调用 + 真实 usage（需本机后端与账号）
 ```
+
+`kernel_turn_regression.mjs` 是最接近"真实会话"的一个：它用**真实 DSH LlmRuntime**
+跑完整回合（内核 → 适配器 → minimax2api → MiniMax 上游 → 回到内核），
+包含工具调用和"把工具结果喂回去"的多轮。踩过的两个内核约束写在脚本注释里：
+消息 `content` 必须是**块数组**（不是字符串），assistant 消息必须带 `source`。
 
 smoke 全部 hermetic：不联网、不依赖本机后端、不读写真实指针文件。
 
