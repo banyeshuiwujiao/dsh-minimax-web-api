@@ -25,12 +25,15 @@
 
 **新发现的两个坑**（本次才暴露，之前没人踩过）：
 
-- [ ] **P0-6 第三方后端按"大陆区无签到服务"跳过 CN 账号，而 cn 部署其实有完整签到服务**。
+- [x] **P0-6 第三方后端按"大陆区无签到服务"跳过 CN 账号，而 cn 部署其实有完整签到服务**。
       代码：`app/signin.py` → `if account.region == REGION_CN: ... "mainland region, no check-in service"`。
       实测：cn 的 `signin/status`、`signin/claim`、`credit/details`、`/config` **全部可用**，
       每日 400 积分（第 4 天 1000）。不领就是 402 `insufficient_balance_error`（errorCode 50113）。
       已在插件侧提供绕开它的入口：`scripts/claim_daily_credits.py`（见 README「每日积分（签到）」）。
-      **欠的**：每天没人跑它 —— 要么给第三方后端打本地补丁让它的调度器领，要么挂计划任务。
+      **自动化已挂**：Windows 计划任务 `MiniMax Daily Credit Claim`，每天 09:05，
+      日志 `%USERPROFILE%\.dsh\logs\minimax-claim.log`（已实测触发一次，LastResult=0）。
+      **语义坑（已修）**：判断依据必须是 `claimed_today` 而不是"余额够不够"——
+      签到按天计，余额没花光的日子跳过就断连续、第 4 天的 1000 分也拿不到。
       验收：连续两天不手动干预，模型请求仍能出字（积分不归零）。
 - [ ] **P0-7 海外区（`account.minimax.io`）的 agent 主机在本机不可用**。
       实测：`agent.minimax.io` 直连 `ConnectError`（README 说的"锁海外出口"），

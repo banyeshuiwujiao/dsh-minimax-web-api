@@ -185,16 +185,39 @@ C:\Users\Admin\DeepSeek_Harness\git-repo\minimax2api\.venv\Scripts\python.exe sc
 
 #### 想让它自动每天跑
 
-三个选择，从省事到彻底：
+**已经挂好了 Windows 计划任务**（每天 09:05，与后端自带签到调度同一时刻）：
 
-1. **用脚本 + 计划任务**（不动第三方仓）：
-   ```powershell
-   schtasks /Create /TN "MiniMax 每日签到" /SC DAILY /ST 09:05 /TR "…\python.exe …\claim_daily_credits.py"
-   ```
-2. **给第三方后端打一个本地补丁**，把 `app/signin.py` 里的 CN 跳过去掉，
-   然后后端自带的「每日签到」（`signin.enabled=true`，09:05）就会自己领。
-   代价：克隆仓与上游产生一处本地差异（需要单独记一笔，见 `TODO.md`）。
-3. **手工**：每天跑一次上面的脚本。
+| 项 | 值 |
+|---|---|
+| 任务名 | `MiniMax Daily Credit Claim` |
+| 触发 | 每天 **09:05**（下一次：2026-10-22 09:05） |
+| 执行 | `cmd.exe /c "…\plugins\dsh-minimax-web-api\scripts\claim_daily_credits.cmd"` |
+| 运行身份 | 当前用户（`Admin`），仅在已登录时运行，不需要存密码 |
+| 错过补偿 | `StartWhenAvailable`：关机错过会在下次开机后补跑 |
+| 日志 | `%USERPROFILE%\.dsh\logs\minimax-claim.log`（>512KB 自动轮转成 `.1`） |
+
+```powershell
+schtasks /Query /TN "MiniMax Daily Credit Claim"          # 看状态与下次运行
+schtasks /Run   /TN "MiniMax Daily Credit Claim"           # 想立刻试一次
+```
+
+包装脚本 `scripts\claim_daily_credits.cmd` 是 **ASCII-only** 的：cmd.exe 按系统 ANSI
+码页（这台机器是 GBK）读 `.cmd`，UTF-8 的中文注释会变成乱码并**连带把后面的行解析坏**
+（真踩过：整份脚本因为一行注释崩掉）。所以注释一律英文，脚本输出用
+`PYTHONIOENCODING=utf-8` 强制 UTF-8 落盘。
+
+#### 每天都要领，不看余额
+
+签到是**按天**的：面板有 day1..day7，今天不领就断连续，第 4 天那 1000 分也拿不到。
+所以判断依据是"今天领没领"（`claimed_today`），**不是**"余额够不够"——
+上游对当天已领是幂等的（返回 already），每天都调是安全的。
+
+（脚本早先的默认是"余额 ≥ 1 就跳过"，那样在余额没花光的第二天会**白跑一天并断签**，
+已改成看 `claimed_today`；`--min-balance` 保留为可选的额外保护，默认 0 = 不设限。）
+
+如果你更想让**第三方后端自己的调度器**来领（而不是计划任务），就要给
+`app/signin.py` 打一个本地补丁去掉它对 CN 的跳过——代价是克隆仓与上游产生一处本地差异
+（见 `TODO.md` 的 P0-6）。
 
 ### 余额不足长什么样
 

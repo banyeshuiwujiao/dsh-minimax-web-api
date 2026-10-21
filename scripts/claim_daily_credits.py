@@ -26,7 +26,16 @@ cn 部署**有**完整的签到服务，状态与领取端点都通：
 ----
     python scripts/claim_daily_credits.py            # 领当日积分并打印余额
     python scripts/claim_daily_credits.py --probe    # 只看状态与余额，不领
-    python scripts/claim_daily_credits.py --min-balance 50   # 余额低于 50 才领
+    python scripts/claim_daily_credits.py --min-balance 50   # 余额不低于 50 就不领
+
+**每天都该跑**：签到是按天的（面板有 day1..day7），今天不领就断连续、第 4 天的 1000 分
+也会错过。所以判断依据是"今天领没领"，不是"余额够不够"——上游对当天已领是幂等的
+（返回 already），每天都调是安全的。
+
+已经挂上 Windows 计划任务（每天 09:05）：
+    schtasks /Query /TN "MiniMax Daily Credit Claim"
+    schtasks /Run   /TN "MiniMax Daily Credit Claim"     # 想立刻试一次
+日志：%USERPROFILE%\\.dsh\\logs\\minimax-claim.log
 
 后端目录解析顺序（与插件 lib/paths.js 一致）：
     环境变量 MINIMAX2API_DIR → 指针 ~/.dsh/minimax2api.json → 插件同级/常见位置
@@ -110,8 +119,20 @@ async def claim(backend_dir: Path, probe_only: bool, min_balance: float) -> int:
                     print(f"    查签到状态失败：{type(err).__name__}: {err}")
                 continue
 
-            if info.total >= min_balance:
-                print(f"    余额已够（{info.total} ≥ {min_balance}），跳过领取")
+            # 是否该领：**看今天领没领，不看余额**。
+            # 签到是按天的（面板有 day1..day7），今天不领就断连续、第 4 天的 1000 分
+            # 也会错过；"余额还够就跳过"会让每日任务在余额没花光的日子白跑一天。
+            # 上游对当天已领是幂等的（返回 already），所以每天都去领是安全的。
+            try:
+                panel = await client.signin_status(cred)
+                if getattr(panel, "claimed_today", False):
+                    print("    今天已领过（幂等跳过）")
+                    continue
+            except Exception as err:  # noqa: BLE001 - 查不到就照领，领取端点自己会判重
+                print(f"    查签到状态失败（仍尝试领取）：{type(err).__name__}: {err}")
+
+            if min_balance > 0 and info.total >= min_balance:
+                print(f"    余额已够（{info.total} ≥ {min_balance}），按 --min-balance 跳过领取")
                 continue
 
             # 顺序不能颠倒：先 /config 建立账号记录，再领取。
@@ -148,8 +169,8 @@ async def claim(backend_dir: Path, probe_only: bool, min_balance: float) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description="给 minimax2api 号池账号领取每日积分（签到）")
     parser.add_argument("--probe", action="store_true", help="只看状态与余额，不领取")
-    parser.add_argument("--min-balance", type=float, default=1.0,
-                        help="余额低于该值才领（默认 1，即余额为 0 时领）")
+    parser.add_argument("--min-balance", type=float, default=0.0,
+                        help="额外保护：余额不低于该值就不领（默认 0 = 不设限，每天都领）")
     args = parser.parse_args()
 
     backend_dir = resolve_backend_dir()
