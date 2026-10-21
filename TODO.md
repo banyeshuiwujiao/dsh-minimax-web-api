@@ -195,15 +195,28 @@
       整整一小时（到 token 自然到期）才可能自愈。
       修复（插件侧）：
       - 新增 `scripts/keep_tokens_alive.py`：复用后端 `Keeper.renew_account`
-        （成功即复位 status=active），在"剩余 ≤20 分钟"或"status=invalid"时动手；
+        （成功即复位 status=active），在"剩余 ≤40 分钟"或"status=invalid"时动手；
       - 插件启动时跑一次，之后每 30 分钟一次（`poolIntervalMs`）→ 客户端开着就不会过期；
+      - 脚本是**进程外**写库，续完会通知后端 sweep 重载号池（否则内存里还是旧 token）；
       - 错误分类：`minimax llm HTTP 401` → `AUTH`、`accounts unusable: ...` →
         `MISSING_CREDENTIAL`（都不可重试；原先都落进 TRANSPORT 白重试两轮）。
-      **上游缺陷本身仍在**（第三方仓只读、不打补丁）：那条"续期成功但仍被退休"的
-      竞争、以及"退休后没有快速恢复"，都还在 `app/pool.py` / `app/keepalive.py` 里。
-      验收：号池空了时跑 `keep_tokens_alive.py --force` + 一次 sweep 即可恢复（实测已恢复）。
+      **上游缺陷已打本地补丁**（`git-repo/minimax2api` 的分支
+      `local/robust-token-recovery`，提交 `f317f34`；`main` 仍与上游一致，
+      push 通道锁死、不推远端；说明见仓内 `LOCAL-PATCHES.md`）：
+      1) `renew_account` **先写库、后 `print` 报告**；stdout 一断（后台 job 的输出管道
+         中途断开——日志从 10:02 之后一行都没有就是它）→ `print` 抛 BrokenPipeError →
+         **一次成功的续期被当成失败** → 凭据完好的账号被退休；sweep 的错误处理同样
+         `print` → **sweep 一起死**，之后再没有续期。补丁：`print` → `_log()`（吞写失败）。
+      2) `pool._record_failure` 把 renewer 抛的异常当"凭据死了" → 退休。补丁：异常只说明
+         **没判定** → 走冷却，不退休。
+      3) sweep 只管"快到期" → 被误退休的账号没有回来的路。补丁：可续期且
+         `status=invalid` 的账号也纳入本轮，续期成功即复位。
+      验证：`tests/test_local_patches.py`（4 例）+ 上游 `tests/test_bridge.py`（97 例）
+      = 101 passed；并在活着的号池上**复现过原事故**（把 token 换成坏的 → 上游 401），
+      结果账号**保持 active**、token 被续上、请求继续出字。
       另注：后端**没有暴露**单账号续期路由（`server.py` 只有 status / sweep），
-      所以救急只能走 `sweep`（它顺带 `pool.load()`，但只动到期账号）。
+      所以救急走 `sweep`（它顺带 `pool.load()`）。
+      环境侧也改了：后端 stdout **直写文件**（`%TEMP%\mmx-api.log`），不再接会断的管道。
 
 ---
 

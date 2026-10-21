@@ -74,6 +74,7 @@ async def keep_alive(backend_dir: Path, force: bool, status_only: bool) -> int:
     keeper = keepalive_mod.Keeper(db, client, lambda: settings)
 
     failures = 0
+    renewed_any = False
     try:
         accounts = await db.list_accounts()
         if not accounts:
@@ -105,12 +106,39 @@ async def keep_alive(backend_dir: Path, force: bool, status_only: bool) -> int:
             if getattr(result, "ok", False):
                 print(f"    已续期（{reason}），新的到期时间 +{int((result.expires_at - now) // 60)} 分钟，"
                       f"status 已复位为 active")
+                renewed_any = True
             else:
                 print(f"    续期失败（{reason}）：{getattr(result, 'error', '?')}")
                 failures += 1
+
+        if renewed_any:
+            # 这个脚本是**进程外**写库，跑着的后端内存里还是旧 token —— 下一次请求
+            # 会拿旧 token 打一次 401（虽然请求路径会兜住，但白打一次）。让它重新
+            # 加载号池：sweep 内部会 pool.load()，而且它自己也会续期到期账号。
+            reload_pool(base_settings)
         return 1 if failures else 0
     finally:
         await db.close()
+
+
+def reload_pool(settings) -> None:
+    """让跑着的后端重新加载号池（续期是进程外写库，内存里还是旧 token）。"""
+    import urllib.error
+    import urllib.request
+
+    base = (settings.upstream.base_url or "http://127.0.0.1:4555").rstrip("/")
+    # upstream.base_url 是上游地址；后端自己的监听地址要从 settings 之外拿，
+    # 这里用约定的本地端口（插件的 baseUrl 也是它）。
+    for candidate in ("http://127.0.0.1:4555", base):
+        try:
+            req = urllib.request.Request(f"{candidate}/admin/api/keepalive/sweep", method="POST")
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                resp.read()
+            print(f"    已通知后端重载号池（{candidate}）")
+            return
+        except (urllib.error.URLError, OSError):
+            continue
+    print("    后端没在跑，号池重载跳过（下次启动自然读新 token）")
 
 
 def main() -> int:

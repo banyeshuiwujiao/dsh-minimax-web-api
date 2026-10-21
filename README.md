@@ -350,6 +350,26 @@ python scripts\keep_tokens_alive.py --force   # 全部续期 + 复位
 Invoke-RestMethod -Method Post http://127.0.0.1:4555/admin/api/keepalive/sweep
 ```
 
+#### 上游那两个洞已经打了本地补丁
+
+`git-repo/minimax2api` 现在停在**本地分支** `local/robust-token-recovery`，
+比上游多一个提交（`main` 仍与上游一致；push 通道已锁死，不推任何远端）。
+补丁内容与理由见仓里的 **`LOCAL-PATCHES.md`**，一句话版：
+
+| 上游的洞 | 补丁 |
+|---|---|
+| `renew_account` 先写库后 `print` 报告结果；stdout 一断就抛，被当成"续期失败" → **好账号被退休**；sweep 的错误处理也 `print` → **sweep 一起死** | `print` → `_log()`（吞写失败），日志不再能打断控制流 |
+| `pool._record_failure` 把 renewer 抛的异常当成"凭据死了" → 退休 | 异常只说明**没判定** → 走冷却，不退休 |
+| sweep 只管"快到期" → 被误退休的账号没有回来的路 | 可续期且 `status=invalid` 的账号也纳入本轮，续期成功即复位 |
+
+验证：`tests/test_local_patches.py`（4 例）+ 上游自带 `tests/test_bridge.py`（97 例）
+= **101 passed**；另外在活着的号池上**复现过原事故**（把 token 换成坏的 → 上游 401），
+结果是账号**保持 active**、token 被续上、请求继续出字。
+
+> 后端进程本身也要注意：**别把它的 stdout 接到会断的管道上**。本机那次事故的触发点
+> 就是后台 job 的输出管道中途断开（日志从 10:02 之后一行都没有）。现在后端的输出
+> 直接重定向到 `%TEMP%\mmx-api.log`（文件），管道断了也无所谓。
+
 ---
 
 ## 配置项
