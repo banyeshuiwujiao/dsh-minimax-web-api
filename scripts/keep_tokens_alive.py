@@ -48,9 +48,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from claim_daily_credits import resolve_backend_dir  # noqa: E402
 
-# 提前多久续期（秒）。后端自己的 margin 在 app/keepalive.py 里，这里取同样的量级：
-# 令牌 1 小时有效，续期请求本身要几秒到几十秒，20 分钟足够安全。
-MARGIN_SEC = 20 * 60
+# 提前多久续期（秒）。
+#
+# 这里必须**大于保活器的复查间隔**（默认 30 分钟），否则会出现这样的洞：
+# 复查点正好落在"剩余 23 分钟"→ 判定还早 → 跳过 → 下次复查时 token 已经过期。
+# 门槛 40 分钟 + 间隔 30 分钟：最坏情况是"剩余 10 分钟时续期"，留足余量。
+MARGIN_SEC = 40 * 60
 
 
 async def keep_alive(backend_dir: Path, force: bool, status_only: bool) -> int:
