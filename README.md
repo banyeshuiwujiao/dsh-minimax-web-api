@@ -45,6 +45,7 @@
 14. **后端目录可移植**：配置 `serverDir` → 环境变量 `DSH_MINIMAX2API_DIR` → 指针 `~/.dsh/minimax2api.json`（`install.ps1` 写，含 git 版本与 Python 路径）→ 插件同级 → home 常见位置。显式写了但目录不成立时**不一票否决**，继续往下找并记日志。
 15. **配置热更新**：适配器每轮 `prepareCall` 读当代配置。只影响请求的项（`defaultMaxTokens`、`toolDescriptionMaxChars`）改完下一轮生效；影响后端进程的项（`baseUrl`、`serverDir`、`pythonPath`、`dataDir`、`detach` 等）变更时自动回收旧管理器并重建。
 16. **复用实例可诊断**：探活结果按 `healthTtlMs` 缓存；复用别人起的实例时比对 `/health` 自述，号池为空会告警一次并给出控制台地址。
+17. **按内核的真实消息形状回放工具调用**：DSH 内核把工具调用放在 **assistant 消息 `content` 的 `{type:'tool-call'}` 块**里（`dsh-agent-loop` 就是 `message.content.filter((b) => b.type === 'tool-call')`），工具结果消息是 `{role:'tool', toolCallId, content:[...]}`。插件把块转成 OpenAI `tool_calls`，**id 原样带上**——上游校验「tool 结果的 `tool_call_id` 必须有对应的 `tool_call`」，对不上就是 `invalid params, tool result's tool id(...) not found (2013)`。读错字段（以为有 `msg.toolCalls`）会让 tool_calls 整个丢失，**多轮里第一次带工具结果就翻车**。
 
 ---
 

@@ -28,6 +28,7 @@ import {
   formatOpenAiMessages,
   formatOpenAiTools,
   retryAfterMs,
+  toolCallsOf,
 } from '../lib/openai.js'
 import { checkContract } from '../lib/contract.js'
 import { claimedToday, createCreditKeeper, localDayKey, readClaimState } from '../lib/credits.js'
@@ -637,6 +638,75 @@ test('余额不足仍判成 QUOTA（不要被 401 的新规则误伤）', () => 
       + 'response: {\\"type\\":\\"error\\",\\"error\\":{\\"type\\":\\"insufficient_balance_error\\"}}","errorCode":50113}'),
     'QUOTA',
   )
+})
+
+test('上游 400（请求不合法）判成 INVALID_REQUEST，不重试', () => {
+  // 这种失败重试一万次也一样（同样的请求体），而且每次 400 都会让后端冷却账号，
+  // 于是后面变成 "all accounts cooling down" —— 一条坏请求把整池拖下水。
+  const message = 'minimax llm HTTP 400: {"type":"error","error":{"type":"invalid_request_error",'
+    + '"message":"invalid params, tool result\'s tool id(call-2efbd09f-c54f-41d2-b524-d8ac27c5d071) not found (2013)"}}'
+  assert.equal(failureCodeForMessage(message), 'INVALID_REQUEST')
+})
+
+test('号池冷却判成 RATE_LIMIT（暂时状态，可重试）', () => {
+  assert.equal(failureCodeForMessage('all accounts cooling down: minimax-cn, minimax-global'), 'RATE_LIMIT')
+})
+
+// ---------------------------------------------------------------- 工具调用回放
+
+test('toolCallsOf 取的是 content 里的 tool-call 块（内核的真实形状）', () => {
+  // DSH 内核把工具调用放在 content 块里，没有 toolCalls 字段。
+  const calls = toolCallsOf({
+    role: 'assistant',
+    content: [
+      { type: 'text', text: '' },
+      { type: 'tool-call', id: 'call_1', name: 'get_weather', arguments: '{"city":"北京"}' },
+    ],
+  })
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].id, 'call_1')
+  assert.equal(calls[0].name, 'get_weather')
+  // 旧的字段形状也认（别的调用方可能用）
+  const legacy = toolCallsOf({ role: 'assistant', toolCalls: [{ id: 'call_2', name: 'x', arguments: {} }] })
+  assert.equal(legacy.length, 1)
+  assert.equal(legacy[0].id, 'call_2')
+})
+
+test('assistant 的 tool-call 块会变成 tool_calls，且 id 与工具结果对得上', () => {
+  // 上游校验的是"tool 结果的 tool_call_id 必须有对应的 tool_call"，
+  // 对不上就 400 (2013)——这正是真实会话翻车的那一次。
+  const messages = formatOpenAiMessages({
+    messages: [
+      {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: '好的' },
+          { type: 'tool-call', id: 'call_1', name: 'get_weather', arguments: '{"city":"北京"}' },
+        ],
+      },
+      { role: 'tool', toolCallId: 'call_1', content: [{ type: 'text', text: '北京：晴 26℃' }] },
+    ],
+  })
+  const assistant = messages.find((m) => m.role === 'assistant')
+  const tool = messages.find((m) => m.role === 'tool')
+  assert.ok(assistant?.tool_calls, 'assistant 消息没有带上 tool_calls')
+  assert.equal(assistant.tool_calls.length, 1)
+  assert.equal(assistant.tool_calls[0].id, 'call_1')
+  assert.equal(assistant.tool_calls[0].function.name, 'get_weather')
+  assert.equal(assistant.tool_calls[0].function.arguments, '{"city":"北京"}')
+  assert.equal(tool.tool_call_id, 'call_1')
+  // 不变量：两边的 id 必须一致
+  assert.equal(tool.tool_call_id, assistant.tool_calls[0].id)
+})
+
+test('reasoning / tool-call 块不算"内容丢失"', () => {
+  const { text, skipped } = collectContent([
+    { type: 'text', text: 'hi' },
+    { type: 'reasoning', text: ' thinking ' },
+    { type: 'tool-call', id: 'c', name: 'n', arguments: '{}' },
+  ])
+  assert.equal(text, 'hi')
+  assert.deepEqual(skipped, [])
 })
 
 // ---------------------------------------------------------------- 汇总

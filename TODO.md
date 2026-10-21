@@ -220,7 +220,27 @@
 
 ---
 
-## 附：取证方法（下次排障直接抄）
+- [x] **P0-9 多轮里带工具结果就 400：插件读错了内核的工具调用形状**（2026-10-21 11:50 实测）。
+      真实 DSH 会话 `session-5b094e98-…` 第 1 步调了两个工具，第 2 步回传历史时上游报
+      `invalid params, tool result's tool id(call-2efbd09f-…) not found (2013)`，
+      随后两个账号被冷却，后面变成 `all accounts cooling down`。
+      根因：**DSH 内核把工具调用放在 assistant 消息 `content` 的 `{type:'tool-call'}` 块**里
+      （`dsh-agent-loop`：`message.content.filter((b) => b.type === "tool-call")`），
+      而插件读的是 `msg.toolCalls` 字段 → undefined → **tool_calls 整个丢失** →
+      上游收到「有 tool 结果、却没有对应 tool_call」的历史 → 400。
+      修：
+      - `lib/openai.js` 新增 `toolCallsOf()`：从 content 块里取 tool-call（同时兼容字段形状），
+        assistant 消息转成 OpenAI `tool_calls` 时**原样带上 id**；
+      - `collectContent` 把 `tool-call` / `reasoning` 块从「内容丢失」里摘出来
+        （前者单独处理，后者本就不该回放），不再刷无意义的告警；
+      - 错误分类补 `INVALID_REQUEST`（400 不可重试）与 `RATE_LIMIT`（号池冷却），
+        并配可操作提示：400 之前落进 TRANSPORT，内核白重试两轮，且每次 400 都冷却账号。
+      教训（已写进回归）：**之前那条内核回归手搓了 `msg.toolCalls`，恰好是插件读错的那个
+      形状，把 bug 盖住了**。现在回归用内核真实形状
+      （content 里的 tool-call 块 + assistant 消息带 `source`），
+      并且 smoke 里钉住「tool 结果的 tool_call_id 与 tool_calls 的 id 一致」这个不变量。
+
+---
 
 1. 会话转录是**每帧一条记录**的 zstd 拼接：`~/.dsh/sessions/--C-Users-Admin-DeepSeek-Harness--/session-<uuid>/session.v4.jsonl.zstd`。
    Node 25 可用 `zlib.zstdDecompressSync`，但**整文件一次性解只会得到第一条记录**；要按 magic `28 b5 2f fd` 切帧逐帧解

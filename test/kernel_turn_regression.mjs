@@ -96,11 +96,18 @@ try {
       { role: 'user', content: [{ type: 'text', text: '请查一下北京的天气。' }] },
       {
         role: 'assistant',
-        content: [{ type: 'text', text: '' }],
+        // 这里**必须**用内核的真实形状：工具调用是 content 里的 {type:'tool-call'} 块，
+        // 不是某个 toolCalls 字段（dsh-agent-loop 就是
+        // `message.content.filter((b) => b.type === "tool-call")`）。
+        // 之前这条用例手搓了 msg.toolCalls，恰好是插件读错的那个形状，把
+        // "tool_calls 被整个丢掉 → 上游 400 (2013)" 这个 bug 盖住了。
+        content: [
+          { type: 'text', text: '' },
+          { type: 'tool-call', id: 'call_1', name: 'get_weather', arguments: '{"city":"北京"}' },
+        ],
         // 内核对 assistant 消息会读 source.replayState（agent-loop 才会写），
         // 手搓的消息必须补一个 source，否则内核自己就抛 TypeError。
         source: { kind: 'model', provider: PROVIDER_ID, model: 'minimax-agent' },
-        toolCalls: [{ id: 'call_1', name: 'get_weather', arguments: { city: '北京' } }],
       },
       { role: 'tool', toolCallId: 'call_1', content: [{ type: 'text', text: '北京：晴，26℃' }] },
       { role: 'user', content: [{ type: 'text', text: '那适合出门吗？一句话。' }] },
