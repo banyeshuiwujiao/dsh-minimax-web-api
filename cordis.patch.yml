@@ -1,0 +1,60 @@
+# ============================================================================
+# dsh-minimax-web-api —— 把 minimax2api（minimaxcode2api）反代接入模型选择器
+# ============================================================================
+# 注意：仅作为 provider 路由接入模型选择器，不加入工具列表。
+#
+# 接入步骤：
+#   1. 执行 .\install.ps1 同步插件到 ~/.dsh/profiles/desktop/node_modules/dsh-minimax-web-api
+#      （install.ps1 会把本机后端目录与 Python 解释器写进指针 ~/.dsh/minimax2api.json，
+#       所以这里不用写绝对路径）
+#   2. 把下方 insert 块合进权威源 dsh-client-config\profiles\desktop\cordis.patch.yml
+#   3. 执行 python scripts\sync-profiles.py --profile desktop
+#   4. 重启 DeepSeek Harness.exe
+# ============================================================================
+
+- insert:
+    - id: dsh-minimax-web-api-provider
+      name: dsh-minimax-web-api/provider
+      config:
+        # 只允许回环：这个后端**完全没有鉴权**（控制台与 /v1 都开放），
+        # 绑到 0.0.0.0 等于把号池和上游额度交给整个网络。
+        baseUrl: 'http://127.0.0.1:4555'
+        # 后端目录故意留空——解析顺序：配置 serverDir → 环境变量 DSH_MINIMAX2API_DIR
+        # → 指针 ~/.dsh/minimax2api.json（install.ps1 写）→ 插件同级 → home 常见位置。
+        # 需要指明时写绝对路径或 ~ 开头的路径：
+        # serverDir: '~/DeepSeek_Harness/git-repo/minimax2api'
+        # Python 解释器同理：配置 pythonPath → 环境变量 DSH_MINIMAX2API_PYTHON
+        # → 后端目录下的 .venv → PATH。通常留空即可，install.ps1 会建好 .venv。
+        # pythonPath: '~/DeepSeek_Harness/git-repo/minimax2api/.venv/Scripts/python.exe'
+        # SQLite 与生成媒体的目录；留空 = <后端目录>/data。
+        # dataDir: '~/.dsh/minimax2api-data'
+        autoStart: true
+        startTimeoutMs: 90000
+        # M3.1 Flash 标称 512K（可选 1M）。申报 512K 让内核的压缩线有依据。
+        maxContextWindow: 512000
+        # Anthropic Messages 的 max_tokens 是必填项，反代缺省只有 4096；
+        # 这个值既向 DSH 申报单轮输出预留，也作为 max_tokens 传给后端。
+        defaultMaxTokens: 32768
+        # 0 = 不裁剪工具描述；>0 时按字符预算裁剪并加省略号。
+        toolDescriptionMaxChars: 0
+        # /health 结果缓存：一次多步会话不必每步都探活一次。0 = 每次都探活。
+        healthTtlMs: 30000
+        # 上游连续无数据的容忍上限，超时按可重试的 TIMEOUT 中止。0 = 不设上限。
+        # MiniMax 首个 token（尤其思考变体）可能很慢，给到 180s。
+        streamIdleTimeoutMs: 180000
+        # 后端子进程输出落盘（超过 2MB 轮转 .1），便于事后取证；留空只留在内存尾部 200 行。
+        logFile: '~/.dsh/logs/minimax-web-api.log'
+        # 托管（默认）：stdio 走管道，插件可 tail 日志并在 dispose 时按进程树回收；
+        # 副作用是拉起者被强杀时后端会因管道断裂自行退出。detach: true 则相反。
+        detach: false
+        killTreeOnDispose: true
+        # 子进程环境默认白名单（OS 必需项 + 代理变量 + MINIMAX2API_*）。
+        # 还要透传别的变量（例如自定义证书路径）时在这里点名变量名。
+        passEnvKeys: []
+        # 直接注入后端的环境变量；MINIMAX2API_* 命名空间已默认放行，一般不用动。
+        env: {}
+        # 最小契约：/health 必须返回带 status 的 JSON（用于识别"这个端口上是不是本反代"）。
+        # 号池为空只告警不拒用——那是运行状态，不是契约失败。
+        strictBackend: true
+        requiredCapabilities: []
+        minBackendVersion: ''
