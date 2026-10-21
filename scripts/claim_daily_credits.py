@@ -90,7 +90,17 @@ async def claim(backend_dir: Path, probe_only: bool, min_balance: float) -> int:
 
     db = Database(str(backend_dir / "data" / "bridge.sqlite3"), str(backend_dir / "data"))
     await db.connect()
-    client = upstream.MiniMaxClient(lambda: db.settings())
+    # 上游默认 request_timeout_sec=300（那是给流式回合留的），但这里只是一次性查询：
+    # 用 300s 的话上游一卡就是 5 分钟起步，领取脚本会长时间挂在客户端启动路径上。
+    # 压到 20s——领取本来就该是快的，卡住就当失败，等下一次复查。
+    import dataclasses
+
+    base_settings = db.settings()
+    settings = dataclasses.replace(
+        base_settings,
+        upstream=dataclasses.replace(base_settings.upstream, request_timeout_sec=20),
+    )
+    client = upstream.MiniMaxClient(lambda: settings)
     failures = 0
     try:
         accounts = await db.list_accounts()

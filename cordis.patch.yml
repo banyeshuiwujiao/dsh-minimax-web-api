@@ -58,3 +58,10 @@
         strictBackend: true
         requiredCapabilities: []
         minBackendVersion: ''
+        # 每日积分（签到）：插件随 DSH 客户端加载，客户端开着就保证当天领到。
+        # 另有 Windows 计划任务（每天 09:05）作为第二道保险，两者跑同一个脚本。
+        dailyCredits: true
+        # 复查间隔：启动时领一次，之后每 6 小时再确认一次当天是否真的领到。0 = 只在启动时领。
+        creditIntervalMs: 21600000
+        # 领取状态文件（记每天的结果，避免同一天重复跑）。
+        creditStateFile: '~/.dsh/minimax-web-api/claim-state.json'

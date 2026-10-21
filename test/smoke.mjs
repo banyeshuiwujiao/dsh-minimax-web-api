@@ -10,6 +10,7 @@
  */
 
 import assert from 'node:assert/strict'
+import { EventEmitter } from 'node:events'
 import { pathToFileURL } from 'node:url'
 
 import {
@@ -29,6 +30,7 @@ import {
   retryAfterMs,
 } from '../lib/openai.js'
 import { checkContract } from '../lib/contract.js'
+import { claimedToday, createCreditKeeper, localDayKey, readClaimState } from '../lib/credits.js'
 import { isBackendDir, resolvePython, resolveServerDir, writePointer } from '../lib/paths.js'
 
 let passed = 0
@@ -429,6 +431,153 @@ await testAsync('prepareCall 返回可调用的 stream', async () => {
   const prepared = await adapter.prepareCall(PROVIDER_ID, 'minimax-m3')
   assert.equal(prepared.model.id, 'minimax-m3')
   assert.equal(typeof prepared.stream, 'function')
+})
+
+// ---------------------------------------------------------------- 每日积分领取器
+
+// 假子进程：只实现领取器用到的接口（stdout/stderr 收数据，close 回报退出码）。
+function fakeChild(exitCode, output = '已领取') {
+  const child = new EventEmitter()
+  child.stdout = new EventEmitter()
+  child.stderr = new EventEmitter()
+  child.kill = () => {}
+  setTimeout(() => {
+    child.stdout.emit('data', Buffer.from(output))
+    child.emit('close', exitCode)
+  }, 0)
+  return child
+}
+
+/** 内存里的状态文件（不碰真实磁盘）。 */
+function fakeStateIo(initial = {}) {
+  const files = new Map(Object.entries(initial))
+  return {
+    files,
+    io: {
+      existsSync: (p) => files.has(p),
+      readFileSync: (p) => files.get(p),
+      mkdirSync: () => {},
+      writeFileSync: (p, data) => files.set(p, data),
+    },
+  }
+}
+
+test('localDayKey 用本地时区给 YYYY-MM-DD', () => {
+  assert.equal(localDayKey(new Date(2026, 9, 21, 9, 5)), '2026-10-21')
+  assert.equal(localDayKey(new Date(2026, 0, 1, 0, 0)), '2026-01-01')
+})
+
+test('claimedToday 只认当天且 ok 的记录', () => {
+  const state = { days: { '2026-10-21': { ok: true }, '2026-10-20': { ok: false } } }
+  assert.equal(claimedToday(state, '2026-10-21'), true)
+  assert.equal(claimedToday(state, '2026-10-20'), false)
+  assert.equal(claimedToday(state, '2026-10-22'), false)
+  assert.equal(claimedToday({}, '2026-10-21'), false)
+})
+
+test('readClaimState 遇到坏文件当没领过', () => {
+  const io = { existsSync: () => true, readFileSync: () => '{ 这不是 json' }
+  assert.deepEqual(readClaimState('x.json', io), { days: {} })
+})
+
+await testAsync('领取器：当天已领过就不再拉起脚本', async () => {
+  const { io, files } = fakeStateIo({ 'state.json': JSON.stringify({ days: { '2026-10-21': { ok: true } } }) })
+  let spawned = 0
+  const keeper = createCreditKeeper({
+    stateFile: 'state.json',
+    home: '/home/x',
+    now: () => new Date(2026, 9, 21, 12, 0),
+    exists: () => true,
+    stateIo: io,
+    spawnImpl: () => { spawned += 1; return fakeChild(0) },
+    resolve: () => ({ pythonPath: 'C:/py/python.exe', scriptPath: 'C:/p/claim.py', serverDir: 'C:/srv' }),
+  })
+  const result = await keeper.runOnce('test')
+  assert.equal(spawned, 0)
+  assert.equal(result.skipped, true)
+})
+
+await testAsync('领取器：没领过就拉起脚本，成功后记下当天', async () => {
+  const { io, files } = fakeStateIo()
+  const spawned = []
+  const keeper = createCreditKeeper({
+    stateFile: 'state.json',
+    home: '/home/x',
+    now: () => new Date(2026, 9, 21, 12, 0),
+    exists: () => true,
+    stateIo: io,
+    spawnImpl: (python, args, opts) => { spawned.push({ python, args, env: opts.env }); return fakeChild(0, '今天已领过') },
+    resolve: () => ({ pythonPath: 'C:/py/python.exe', scriptPath: 'C:/p/claim.py', serverDir: 'C:/srv' }),
+  })
+  const result = await keeper.runOnce('test')
+  assert.equal(result.ok, true)
+  assert.equal(spawned.length, 1)
+  assert.equal(spawned[0].python, 'C:/py/python.exe')
+  assert.deepEqual(spawned[0].args, ['C:/p/claim.py'])
+  // 后端目录要通过环境变量传给脚本（脚本自己也要能解析后端目录）
+  assert.equal(spawned[0].env.MINIMAX2API_DIR, 'C:/srv')
+  const saved = JSON.parse(files.get('state.json'))
+  assert.equal(saved.days['2026-10-21'].ok, true)
+})
+
+await testAsync('领取器：脚本失败不记成功（明天还能再领）', async () => {
+  const { io, files } = fakeStateIo()
+  const keeper = createCreditKeeper({
+    stateFile: 'state.json',
+    home: '/home/x',
+    now: () => new Date(2026, 9, 21, 12, 0),
+    exists: () => true,
+    stateIo: io,
+    spawnImpl: () => fakeChild(1, 'boom'),
+    resolve: () => ({ pythonPath: 'C:/py/python.exe', scriptPath: 'C:/p/claim.py' }),
+  })
+  const result = await keeper.runOnce('test')
+  assert.equal(result.ok, false)
+  assert.equal(files.has('state.json'), false)
+})
+
+await testAsync('领取器：缺解释器时只告警不抛', async () => {
+  const { io } = fakeStateIo()
+  const warnings = []
+  const keeper = createCreditKeeper({
+    stateFile: 'state.json',
+    home: '/home/x',
+    now: () => new Date(2026, 9, 21, 12, 0),
+    exists: () => false,
+    stateIo: io,
+    logger: { warn: (m) => warnings.push(m), debug: () => {} },
+    resolve: () => ({ pythonPath: 'C:/py/python.exe' }),
+  })
+  const result = await keeper.runOnce('test')
+  assert.equal(result.ok, false)
+  assert.equal(warnings.length, 1)
+  assert.match(warnings[0], /Python/)
+})
+
+await testAsync('领取器：脚本卡住时按硬超时终止，不无限挂着', async () => {
+  const { io, files } = fakeStateIo()
+  let killed = false
+  const keeper = createCreditKeeper({
+    stateFile: 'state.json',
+    home: '/home/x',
+    now: () => new Date(2026, 9, 21, 12, 0),
+    exists: () => true,
+    stateIo: io,
+    timeoutMs: 50,
+    // 永远不 close 的子进程：模拟上游卡死
+    spawnImpl: () => {
+      const child = new EventEmitter()
+      child.stdout = new EventEmitter()
+      child.stderr = new EventEmitter()
+      child.kill = () => { killed = true }
+      return child
+    },
+    resolve: () => ({ pythonPath: 'C:/py/python.exe', scriptPath: 'C:/p/claim.py' }),
+  })
+  const result = await keeper.runOnce('test')
+  assert.equal(result.ok, false)
+  assert.equal(killed, true)
+  assert.equal(files.has('state.json'), false)
 })
 
 // ---------------------------------------------------------------- 汇总

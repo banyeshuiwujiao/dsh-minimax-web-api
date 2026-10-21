@@ -99,11 +99,16 @@ if ($backendRev -and $backendRev -ne "(读取失败)") {
 Write-Host "[4/5] 同步插件至运行时镜像并校验一致性..."
 $dst = Join-Path $env:USERPROFILE '.dsh\profiles\desktop\node_modules\dsh-minimax-web-api'
 New-Item -ItemType Directory -Force -Path $dst | Out-Null
-Copy-Item -Recurse -Force (Join-Path $src 'lib'), (Join-Path $src 'package.json'), (Join-Path $src 'README.md') $dst
+Copy-Item -Recurse -Force (Join-Path $src 'lib'), (Join-Path $src 'scripts'), (Join-Path $src 'package.json'), (Join-Path $src 'README.md') $dst
 
 # 逐文件比哈希：半复制/漏复制（比如新加了 lib/*.js 却没同步）都能当场发现。
+# scripts/ 也要校验：插件在运行时找不到 claim_daily_credits.py 就领不到积分，
+# 而这个缺失是静默的（只在日志里留一行 warn）。
 $mismatch = @()
-foreach ($rel in @('package.json', 'README.md') + (Get-ChildItem -Path (Join-Path $src 'lib') -Filter *.js | ForEach-Object { "lib/$($_.Name)" })) {
+$mirrored = @('package.json', 'README.md') `
+  + (Get-ChildItem -Path (Join-Path $src 'lib') -Filter *.js | ForEach-Object { "lib/$($_.Name)" }) `
+  + (Get-ChildItem -Path (Join-Path $src 'scripts') -File -ErrorAction SilentlyContinue | ForEach-Object { "scripts/$($_.Name)" })
+foreach ($rel in $mirrored) {
   $a = Join-Path $src $rel
   $b = Join-Path $dst $rel
   if (-not (Test-Path $b)) { $mismatch += "$rel (镜像缺失)"; continue }
