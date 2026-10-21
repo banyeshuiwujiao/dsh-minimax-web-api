@@ -48,7 +48,20 @@ rem The log is UTF-8 regardless of the system codepage, so it stays readable.
 set "PYTHONIOENCODING=utf-8"
 set "PYTHONUNBUFFERED=1"
 
-"%PY%" "%SCRIPT%" >>"%LOG%" 2>&1
+rem ---------------------------------------------------------------------------
+rem Step 1: make sure v2rayN still routes *.minimax.io through the proxy.
+rem Without that rule the overseas account (agent.minimax.io) answers 307 to the
+rem CN site and the global check-in dies. The rule lives in v2rayN's routing
+rem presets, so a preset switch or a v2rayN update can drop it.
+rem Exit code 2 from the checker means "I fixed it, but v2rayN must be restarted".
+rem ---------------------------------------------------------------------------
+"%PY%" "%~dp0ensure_v2rayn_minimax_proxy.py" >>"%LOG%" 2>&1
+if errorlevel 2 echo [WARN] v2rayN minimax proxy rule was re-added - RESTART v2rayN to make it effective >>"%LOG%"
+
+rem ---------------------------------------------------------------------------
+rem Step 2: claim today's credits for every account in the pool.
+rem ---------------------------------------------------------------------------
+"%PY%" "%~dp0claim_daily_credits.py" >>"%LOG%" 2>&1
 set "RC=%ERRORLEVEL%"
 echo ==== %DATE% %TIME% exit=%RC% ==== >>"%LOG%"
 

@@ -35,12 +35,21 @@
       **语义坑（已修）**：判断依据必须是 `claimed_today` 而不是"余额够不够"——
       签到按天计，余额没花光的日子跳过就断连续、第 4 天的 1000 分也拿不到。
       验收：连续两天不手动干预，模型请求仍能出字（积分不归零）。
-- [ ] **P0-7 海外区（`account.minimax.io`）的 agent 主机在本机不可用**。
-      实测：`agent.minimax.io` 直连 `ConnectError`（README 说的"锁海外出口"），
-      走本机 v2rayN 代理（`http://127.0.0.1:10808`，出口新加坡 Cloudflare）则 **307 跳到 `agent.minimaxi.com`**；
-      出口 IP 是 `104.28.x`（Cloudflare），但 Akamai 边缘仍按地区跳国内站。
-      结论：**全球号在这台机器上换不来额度**，别再在它上面花时间；CN + 每日签到才是可用路径。
-      附带：`account.minimax.io` 的 OAuth（发码/取 token）本身是通的，**只有 agent 主机**被跳。
+- [x] **P0-7 海外区（`account.minimax.io`）的 agent 主机在本机不可用** → **已解决**。
+      当时的实测与误判：`agent.minimax.io` 直连 `ConnectError`（README 说的"锁海外出口"），
+      走本机 v2rayN 代理（`http://127.0.0.1:10808`）则 **307 跳到 `agent.minimaxi.com`**。
+      当时误以为"全球号换不来额度"，实际**根因是 v2rayN TUN 默认「绕过大陆」规则**：
+      `minimax.io` 命中 `geoip:cn` → 直连国内 → Akamai 边缘按出口地域 307 到国内站。
+      **换 DNS 没用**（强制连 DoH 解析出的 `2.17.106.x` 依然 307），必须让**出口**在海外。
+      解法：在 v2rayN 路由预设加一条按域名的规则（优先于 `geoip:cn` / `geosite:cn`）：
+      `{"OutboundTag":"proxy","Domain":["domain:minimax.io"]}`，改完**重启 v2rayN**。
+      验证：`agent.minimax.io/v1/api/user/info` 由 307 变 **401**（真 API），
+      `agent.minimax.io/` 变 **200**，`account.minimax.io/oauth2/device/code` 变 **200**。
+      **海外号已入池**（`minimax-global`，region=global），签到同样有 400 积分/天，
+      停掉 CN 号单独跑真实推理 + 真实工具调用全过（ttft 1.1s）。
+      **脆弱点**：规则写在路由预设里，换预设就没了 → 插件自带
+      `scripts/ensure_v2rayn_minimax_proxy.py` 把规则补进**每个**预设，
+      每日任务先跑它再领积分；补了当前生效的预设时会提示需要重启 v2rayN。
 
 ---
 

@@ -107,14 +107,80 @@ no accounts configured; add one in the console
 
 所以：
 
-- **国内区 + 微信扫码**是当前最省事的一条路：扫码即登录，手机号未注册会自动建号。
+- **国内区 + 微信扫码**是最省事的一条路：扫码即登录，手机号未注册会自动建号。
   登录后**必须领当日积分**（下节），否则每条请求都 402。
-- **海外区**只有 Google/GitHub/邮箱，且它的 agent 主机（`agent.minimax.io`）会按出口地区
-  307 跳到国内站（实测：本机无论直连还是走 v2rayN 代理都是这个结果），
-  所以**海外号在这台机器上基本不可用**——别在它上面浪费时间。
+- **海外区**只有 Google/GitHub/邮箱，且它的 agent 主机**必须从海外出口访问**——
+  否则 Akamai 边缘会 307 跳到国内站（细节见下一节）。把 v2rayN 的路由规则配好之后，
+  海外号是**完全可用**的：独立跑真实推理 + 真实工具调用都通过，ttft 1.1s，
+  每天签到同样是 400 积分。两个区各一个号，每天合计 800 积分（≈280 万 token）。
 
 > 设备码 5 分钟过期，且 `expires_in` 是服务端定的、客户端改不了。过期就重新签发一条；
 > 浏览器里**登录态会保留**（cookie 在），所以第二次通常直接落到授权页、点一下 Authorize 即可。
+
+### 海外站必须走海外出口（v2rayN 路由规则，踩坑重灾区）
+
+`agent.minimax.io` 有一个很容易被误判成"被墙"的行为：
+
+```
+GET https://agent.minimax.io/v1/api/user/info
+→ HTTP 307  Location: https://agent.minimaxi.com/v1/api/user/info   body 为空
+```
+
+它**不是被墙**，是 Akamai 边缘按**出口地域**做的跳转：国内出口 → 跳国内站。
+后果很隐蔽——上游拿到 307 的空 body，minimax2api 报的是
+`minimax user info 返回非 JSON:`（空），而导入流程就在这一步死掉，
+看起来像"账号登录失败"，其实只是出口不对。
+
+**根因在 v2rayN 的 TUN 默认规则**：TUN 模式下默认是「绕过大陆」，
+`minimax.io` 解析到的 Akamai 国内边缘 IP 命中 `geoip:cn` → 直连 → 撞上 307。
+
+> 顺带一提：手动把 DNS 换成 DoH 解析出的海外边缘 IP **也没用**——强制连到
+> `2.17.106.x` 依然 307。必须是**出口**真的在海外。
+
+**解法**：在 v2rayN 的路由预设里加一条**按域名**的规则，让它优先于
+`geoip:cn` / `geosite:cn` 那两条直连规则：
+
+```json
+{"OutboundTag": "proxy", "Domain": ["domain:minimax.io"], "Enabled": true,
+ "Remarks": "强制代理MiniMax海外站"}
+```
+
+只代理 `.io`，**不代理** `.com` / `.cn`：国内站直连即可，走代理反而多一跳。
+
+改完必须**重启 v2rayN**（路由真源是 DB，跑着的 sing-box 用的是启动时生成的
+`binConfigs/configPre.json`；改了 DB 不重启不生效）。生成结果长这样：
+
+```json
+{"outbound":"proxy","network":["tcp","udp"],"port_range":["0:65535"],"domain_suffix":["minimax.io"]}
+```
+
+验证（加规则前 → 加规则后）：
+
+| 请求 | 加规则前 | 加规则后 |
+|---|---|---|
+| `agent.minimax.io/v1/api/user/info` | 307 跳国内站 | **401**（真 API 响应） |
+| `agent.minimax.io/` | 307 | **200**（海外站 SPA） |
+| `account.minimax.io/oauth2/device/code` | ConnectError | **200**（正常发码） |
+
+#### 别让这条规则悄悄丢了
+
+规则写在 v2rayN 的**路由预设**里，而预设是可以切换的——在界面上换成「全局」
+或「黑名单」，这条规则就没了，海外号随即开始 307。
+所以插件自带一个**自愈脚本**，它把规则补进**每一个**预设：
+
+```powershell
+python scripts\ensure_v2rayn_minimax_proxy.py            # 检查 + 补齐
+python scripts\ensure_v2rayn_minimax_proxy.py --check    # 只检查
+python scripts\ensure_v2rayn_minimax_proxy.py --remove   # 拆掉
+```
+
+退出码 `2` = "我补上了，但**需要重启 v2rayN** 才生效"。
+每日签到的计划任务会先跑这个检查（补规则），再领积分；补了当前生效的预设时，
+日志里会留一行 `[WARN] ... RESTART v2rayN to make it effective`。
+
+> 后端自己的 `upstream.proxy` 建议**留空**：国内账号直连即可，留空才不会因为
+> v2rayN 没开就整个后端不可用。海外账号靠上面那条 TUN 规则出海。
+
 
 ### 每日积分（签到）—— CN 账号怎么领
 
@@ -165,13 +231,16 @@ cd C:\Users\Admin\DeepSeek_Harness\dsh-client-config\plugins\dsh-minimax-web-api
 C:\Users\Admin\DeepSeek_Harness\git-repo\minimax2api\.venv\Scripts\python.exe scripts\claim_daily_credits.py
 ```
 
-输出（已签过时会幂等跳过，不重复领）：
+输出（已签过时会幂等跳过，不重复领；**两个区的账号都会处理**）：
 
 ```
 后端目录：C:\Users\Admin\DeepSeek_Harness\git-repo\minimax2api
 === minimax-cn (region=cn) ===
-    余额 total=399.796 free=399.796 purchased=0.0 plan=/1
-    余额已够（399.796 ≥ 1.0），跳过领取
+    余额 total=399.574 free=399.574 purchased=0.0 plan=/1
+    今天已领过（幂等跳过）
+=== minimax-global (region=global) ===
+    余额 total=399.878 free=399.878 purchased=0.0 plan=/1
+    今天已领过（幂等跳过）
 ```
 
 参数：
@@ -179,7 +248,7 @@ C:\Users\Admin\DeepSeek_Harness\git-repo\minimax2api\.venv\Scripts\python.exe sc
 | 参数 | 含义 |
 |---|---|
 | `--probe` | 只看余额与签到面板，不领取 |
-| `--min-balance 50` | 余额低于该值才领（默认 1，即余额为 0 时领） |
+| `--min-balance 50` | 额外保护：余额不低于该值就不领（默认 0 = 不设限，每天都领） |
 
 后端目录解析顺序与插件 `lib/paths.js` 一致：`MINIMAX2API_DIR` → 指针 `~/.dsh/minimax2api.json` → 常见位置。
 
@@ -195,6 +264,12 @@ C:\Users\Admin\DeepSeek_Harness\git-repo\minimax2api\.venv\Scripts\python.exe sc
 | 运行身份 | 当前用户（`Admin`），仅在已登录时运行，不需要存密码 |
 | 错过补偿 | `StartWhenAvailable`：关机错过会在下次开机后补跑 |
 | 日志 | `%USERPROFILE%\.dsh\logs\minimax-claim.log`（>512KB 自动轮转成 `.1`） |
+
+任务实际跑**两步**：
+
+1. `ensure_v2rayn_minimax_proxy.py` —— 检查/补齐 v2rayN 的「minimax 海外站走代理」规则
+   （海外号要靠它才能出海，见上一节）；
+2. `claim_daily_credits.py` —— 给号池里**每个**账号领当日积分。
 
 ```powershell
 schtasks /Query /TN "MiniMax Daily Credit Claim"          # 看状态与下次运行
