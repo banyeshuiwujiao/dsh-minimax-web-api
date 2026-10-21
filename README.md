@@ -102,17 +102,99 @@ no accounts configured; add one in the console
 |---|---|---|
 | 登录方式 | **微信扫码**（默认）、手机号+短信、账号密码 | **Continue with Google / Github / 邮箱**，无微信、无手机号 |
 | 人机验证 | 点「获取验证码」会弹**腾讯 TCaptcha 滑块**（协议层伪造不了） | reCAPTCHA（登录页） |
-| 每日签到积分 | **没有**（`app/signin.py`：*"mainland region, no check-in service"*） | **有**（每日签到送积分，够白嫖） |
-| 余额不足 | 只能**充值** | 签到领的积分就够用 |
+| 每日签到积分 | **有**（见下节；第三方后端误判为"无"） | 有 |
+| 余额不足 | 签到领的积分就够用 | 签到领的积分就够用 |
 
 所以：
 
-- **只想用现成的微信账号** → 国内区扫码登录，但账号**必须充值**才有额度。
-- **想要免费额度** → 海外区，用 Google/GitHub 登录，然后打开控制台「设置 → 每日签到」并跑一次
-  `POST /admin/api/signin/run`，签到积分到账后即可出字。
+- **国内区 + 微信扫码**是当前最省事的一条路：扫码即登录，手机号未注册会自动建号。
+  登录后**必须领当日积分**（下节），否则每条请求都 402。
+- **海外区**只有 Google/GitHub/邮箱，且它的 agent 主机（`agent.minimax.io`）会按出口地区
+  307 跳到国内站（实测：本机无论直连还是走 v2rayN 代理都是这个结果），
+  所以**海外号在这台机器上基本不可用**——别在它上面浪费时间。
 
 > 设备码 5 分钟过期，且 `expires_in` 是服务端定的、客户端改不了。过期就重新签发一条；
 > 浏览器里**登录态会保留**（cookie 在），所以第二次通常直接落到授权页、点一下 Authorize 即可。
+
+### 每日积分（签到）—— CN 账号怎么领
+
+**"免费"的准确含义是"免费套餐 + 每天签到送额度"，不是无限免费。**
+账号本身不花钱，插件也不花钱；花的是 **MiniMax 账号的积分**，而积分来自每日签到。
+
+实测（2026-10-21，本机 CN 账号）：
+
+| 步骤 | 结果 |
+|---|---|
+| 领之前查余额 | `plan=免费/1`，但 `total=0 / free=0 / purchased=0` |
+| 不领直接发模型请求 | `402 insufficient_balance_error (1008)`，`errorCode 50113` |
+| 领 400 积分后**同一条请求** | ✅ 真实出字 + 真实工具调用 + 真实 usage |
+| 两次真实回合后余额 | `399.796`（400 − 0.204，约合 140 万 token 的量级） |
+
+> 消费级网页聊天（`chat.minimaxi.com`）的免费额度与 Agent/Code 模型 API **不是同一个计费池**，
+> 网页上能白聊不代表模型 API 能白用。
+
+#### ⚠ 第三方后端的一个错误假设
+
+`minimax2api` 自带的签到服务对大陆区账号**直接跳过**：
+
+```python
+# app/signin.py（第三方仓，read-only）
+if account.region == REGION_CN:
+    preflight.reason = "mainland region, no check-in service"
+```
+
+这是作者的**假设**，不是上游事实。**cn 部署其实有完整的签到服务**，实测三个端点全通：
+
+| 端点 | 作用 |
+|---|---|
+| `GET /minimax-cloud/api/v1/signin/status` | 7 天签到面板（每天 400 分，第 4 天 1000） |
+| `POST /minimax-cloud/api/v1/signin/claim` | 领取当日积分，返回 `points` |
+| `GET /matrix/api/v1/commerce/get_membership_info` | 余额（`total` / `free` / `purchased`） |
+| `GET /minimax-cloud/api/v1/config` | **必须先调**，否则上游"记录了已签到但永不发放积分" |
+
+这三个端点都走 `x-signature` / `yy` 签名（`x-signature = md5(second + 'I*7Cf%WZ#S&%1RlZJ&C2' + body)`），
+**顺序不能颠倒：先 `/config` 再 `claim`**。
+
+#### 领积分：用本插件自带的脚本
+
+签名、代理、错误分类都在第三方仓的 `app/upstream.py` 里，本插件不重复实现协议，
+只提供一个**绕开"大陆区跳过"判断**的入口：
+
+```powershell
+cd C:\Users\Admin\DeepSeek_Harness\dsh-client-config\plugins\dsh-minimax-web-api
+C:\Users\Admin\DeepSeek_Harness\git-repo\minimax2api\.venv\Scripts\python.exe scripts\claim_daily_credits.py
+```
+
+输出（已签过时会幂等跳过，不重复领）：
+
+```
+后端目录：C:\Users\Admin\DeepSeek_Harness\git-repo\minimax2api
+=== minimax-cn (region=cn) ===
+    余额 total=399.796 free=399.796 purchased=0.0 plan=/1
+    余额已够（399.796 ≥ 1.0），跳过领取
+```
+
+参数：
+
+| 参数 | 含义 |
+|---|---|
+| `--probe` | 只看余额与签到面板，不领取 |
+| `--min-balance 50` | 余额低于该值才领（默认 1，即余额为 0 时领） |
+
+后端目录解析顺序与插件 `lib/paths.js` 一致：`MINIMAX2API_DIR` → 指针 `~/.dsh/minimax2api.json` → 常见位置。
+
+#### 想让它自动每天跑
+
+三个选择，从省事到彻底：
+
+1. **用脚本 + 计划任务**（不动第三方仓）：
+   ```powershell
+   schtasks /Create /TN "MiniMax 每日签到" /SC DAILY /ST 09:05 /TR "…\python.exe …\claim_daily_credits.py"
+   ```
+2. **给第三方后端打一个本地补丁**，把 `app/signin.py` 里的 CN 跳过去掉，
+   然后后端自带的「每日签到」（`signin.enabled=true`，09:05）就会自己领。
+   代价：克隆仓与上游产生一处本地差异（需要单独记一笔，见 `TODO.md`）。
+3. **手工**：每天跑一次上面的脚本。
 
 ### 余额不足长什么样
 

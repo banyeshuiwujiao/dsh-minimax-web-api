@@ -8,6 +8,40 @@
 
 ---
 
+## 2026-10-21 07:00-09:50 续跑结论（哪些已闭环、哪些还欠着）
+
+**已闭环**（证据见下）：
+
+- [x] **P0-1 号池为空、整条链从未产出真实推理** → 账号已入池（CN 区，微信扫码登录），
+      `minimax-agent` 真实出字 48 字 + 真实工具调用 `get_weather({"city":"北京"})` + 真实 usage（210/27、452/38），
+      ttft 2.2s。跑法：`node test/live_e2e.mjs`。
+- [x] **P0-4 指针 `gitRev` 永远是 null** → `install.ps1` 现在回写真值，指针实测 `0411037`。
+- [x] **P0-5 第三方仓 origin 可 push** → `git remote set-url --push origin DISABLED-local-only`（fetch 仍可用）。
+- [x] **P0-3 的一半：LICENSE** → 已补 MIT（同 `dsh-deepseek-web-api`）。
+      **偏离既定设计**：本插件**没有**自己的 git 仓，而是暂由外层 `dsh-client-config` 跟踪
+      （外层 `.gitignore` 已注明理由：没有远端就忽略它 = 源码完全没进版本管理）。
+      若将来要独立成仓，先把它移出外层跟踪再 `git init`。
+- [x] **P1-6 4555 是否只绑回环** → 实测监听地址只有 `127.0.0.1`。
+
+**新发现的两个坑**（本次才暴露，之前没人踩过）：
+
+- [ ] **P0-6 第三方后端按"大陆区无签到服务"跳过 CN 账号，而 cn 部署其实有完整签到服务**。
+      代码：`app/signin.py` → `if account.region == REGION_CN: ... "mainland region, no check-in service"`。
+      实测：cn 的 `signin/status`、`signin/claim`、`credit/details`、`/config` **全部可用**，
+      每日 400 积分（第 4 天 1000）。不领就是 402 `insufficient_balance_error`（errorCode 50113）。
+      已在插件侧提供绕开它的入口：`scripts/claim_daily_credits.py`（见 README「每日积分（签到）」）。
+      **欠的**：每天没人跑它 —— 要么给第三方后端打本地补丁让它的调度器领，要么挂计划任务。
+      验收：连续两天不手动干预，模型请求仍能出字（积分不归零）。
+- [ ] **P0-7 海外区（`account.minimax.io`）的 agent 主机在本机不可用**。
+      实测：`agent.minimax.io` 直连 `ConnectError`（README 说的"锁海外出口"），
+      走本机 v2rayN 代理（`http://127.0.0.1:10808`，出口新加坡 Cloudflare）则 **307 跳到 `agent.minimaxi.com`**；
+      出口 IP 是 `104.28.x`（Cloudflare），但 Akamai 边缘仍按地区跳国内站。
+      结论：**全球号在这台机器上换不来额度**，别再在它上面花时间；CN + 每日签到才是可用路径。
+      附带：`account.minimax.io` 的 OAuth（发码/取 token）本身是通的，**只有 agent 主机**被跳。
+
+---
+
+
 ## 0. 已经确认没问题的部分（别重复劳动）
 
 - 后端拉起链路是通的：`node test/live_lifecycle.mjs`（seq 863，06:51:31）跑出
