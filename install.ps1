@@ -1,6 +1,6 @@
-# dsh-minimax-web-api 安装与同步脚本 (幂等)
+# dsh-minimax-web-api 安装/自检脚本 (幂等)
 #
-# 顺序是故意的：先验配置与测试，再看后端与 Python 环境，最后才动运行时镜像。
+# 顺序是故意的：先验配置与测试，再看后端与 Python 环境，最后校验运行时接线。
 # 任何一步失败都立刻停止（$ErrorActionPreference = 'Stop'），不留半成品状态。
 #
 # 后端目录不再写死在本脚本里：不传 -BackendDir 就交给 lib/paths.js 的解析顺序
@@ -96,30 +96,29 @@ if ($backendRev -and $backendRev -ne "(读取失败)") {
   Write-Host "  指针已更新（含 gitRev）: $repin"
 }
 
-Write-Host "[4/5] 同步插件至运行时镜像并校验一致性..."
+Write-Host "[4/5] 校验运行时接线（link 依赖 = junction，全机只有一份代码）..."
+# 2026-10-22 起不再往 node_modules 里拷代码：两份副本必然漂移（改错一份就静默跑旧代码），
+# 而且 pnpm 视手抄目录为 extraneous，每次 `pnpm install` 都想把它挪进 .ignored——
+# 当天那次就对 dsh-deepseek-web-api 真的下手了（本插件只是因为移动失败才侥幸留下）。
+# 现在 profile 的 package.json 里有 link: 依赖，node_modules/dsh-minimax-web-api 只是指回本目录的
+# junction：改完即生效（仍需重启客户端才重新加载模块），scripts/ 也自动跟着走。
 $dst = Join-Path $env:USERPROFILE '.dsh\profiles\desktop\node_modules\dsh-minimax-web-api'
-New-Item -ItemType Directory -Force -Path $dst | Out-Null
-Copy-Item -Recurse -Force (Join-Path $src 'lib'), (Join-Path $src 'scripts'), (Join-Path $src 'package.json'), (Join-Path $src 'README.md') $dst
-
-# 脚本跑过之后会生成 __pycache__：它不是源码，不该进镜像（也会污染"多出来的文件"）。
-Get-ChildItem -Path (Join-Path $dst 'scripts') -Directory -Filter '__pycache__' -ErrorAction SilentlyContinue |
-  Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-
-# 逐文件比哈希：半复制/漏复制（比如新加了 lib/*.js 却没同步）都能当场发现。
-# scripts/ 也要校验：插件在运行时找不到 claim_daily_credits.py 就领不到积分，
-# 而这个缺失是静默的（只在日志里留一行 warn）。
-$mismatch = @()
-$mirrored = @('package.json', 'README.md') `
-  + (Get-ChildItem -Path (Join-Path $src 'lib') -Filter *.js | ForEach-Object { "lib/$($_.Name)" }) `
-  + (Get-ChildItem -Path (Join-Path $src 'scripts') -File -ErrorAction SilentlyContinue | ForEach-Object { "scripts/$($_.Name)" })
-foreach ($rel in $mirrored) {
-  $a = Join-Path $src $rel
-  $b = Join-Path $dst $rel
-  if (-not (Test-Path $b)) { $mismatch += "$rel (镜像缺失)"; continue }
-  if ((Get-FileHash $a -Algorithm SHA256).Hash -ne (Get-FileHash $b -Algorithm SHA256).Hash) { $mismatch += $rel }
+$linkSpec = 'dsh-minimax-web-api@link:' + ($src -replace '\\', '/')
+if (-not (Test-Path $dst)) {
+  throw "运行时未接线（$dst 不存在）。在该 profile 目录执行一次：`n  pnpm add `"$linkSpec`"`n然后重启 DeepSeek Harness.exe。"
 }
-if ($mismatch.Count -gt 0) { throw "运行时镜像与源码不一致: $($mismatch -join ', ')" }
-Write-Host "  已同步并校验一致: $dst"
+$dstItem = Get-Item $dst -Force
+if ($dstItem.LinkType -eq 'Junction' -or $dstItem.LinkType -eq 'SymbolicLink') {
+  if (@($dstItem.Target) -notcontains $src) { throw "接线指向别处：$dst -> $($dstItem.Target)（期望 $src）" }
+  Write-Host "  已接线（$($dstItem.LinkType)）：$dst -> $src"
+  foreach ($rel in @('lib\provider.js', 'scripts\claim_daily_credits.py')) {
+    if (-not (Test-Path (Join-Path $dst $rel))) { throw "接线可见但缺文件：$rel（源码目录里是不是丢了？）" }
+  }
+  Write-Host "  lib/ 与 scripts/ 均可通过接线看到"
+} else {
+  # 旧方案留下的实体副本：它会独立于源码漂移，必须显式换成 junction，别默默放行。
+  throw "运行时是实体拷贝而不是 junction（改代码不会生效，pnpm 还会把它当 extraneous 删掉）。修复：`n  Remove-Item -Recurse -Force '$dst'`n  New-Item -ItemType Junction -Path '$dst' -Target '$src'`n或改成正式依赖：pnpm add `"$linkSpec`""
+}
 
 Write-Host "[5/5] 提示: 请确认 dsh-client-config\profiles\desktop\cordis.patch.yml 已包含配置，"
 Write-Host "       再执行 python scripts\sync-profiles.py --profile desktop，"

@@ -34,12 +34,12 @@ await withRuntime(async (ctx) => {
     autoStart: false,
   })
   ctx.llm.registerAdapter([PROVIDER_ID], adapter)
-  const prepared = await ctx.llm.prepareCall({ provider: PROVIDER_ID, model: 'minimax-m3.1-flash' })
+  const prepared = await ctx.llm.prepareCall({ provider: PROVIDER_ID, model: 'minimax-agent' })
   console.log('真实 DSH LlmRuntime prepareCall 结果:', JSON.stringify({
     config: prepared.config,
     hasStream: typeof prepared.stream === 'function',
   }))
   assert.equal(typeof prepared.stream, 'function')
-  assert.equal(prepared.config.model, 'minimax-m3.1-flash')
+  assert.equal(prepared.config.model, 'minimax-agent')
   console.log('✅ 真实 DSH LlmRuntime 集成回归通过')
 })

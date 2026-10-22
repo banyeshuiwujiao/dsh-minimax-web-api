@@ -63,21 +63,20 @@ test('DEFAULTS.baseUrl 只绑回环', () => {
   assert.equal(new URL(DEFAULTS.baseUrl).hostname, '127.0.0.1')
 })
 
-test('KNOWN_MODELS 都是后端目录里的 id，且不含图像模型', () => {
+test('KNOWN_MODELS 只公布号池默认模型，且不含图像模型', () => {
+  // 2026-10-22：选择器精简，只留号池默认的 minimax-agent。后端 builtin_models()
+  // 仍认识被移除的 minimax-m3.1-flash / -thinking、minimax-m3 / -thinking，
+  // 但选择器不再公布；以后改目录要连这里一起改。
   const ids = KNOWN_MODELS.map((m) => m.id)
-  assert.deepEqual(ids, [
-    'minimax-agent',
-    'minimax-m3.1-flash',
-    'minimax-m3.1-flash-thinking',
-    'minimax-m3',
-    'minimax-m3-thinking',
-  ])
+  assert.deepEqual(ids, ['minimax-agent'])
+  assert.equal(KNOWN_MODELS[0].name, 'MiniMax Agent · M3.1 Flash（默认）')
   assert.ok(!ids.includes('minimax-image'), '图像模型会走对话链路，不能列进来')
 })
 
 test('resolveThinkingEnabled 认已知模型，未知模型按名字猜', () => {
-  assert.equal(resolveThinkingEnabled('minimax-m3-thinking'), true)
-  assert.equal(resolveThinkingEnabled('minimax-m3.1-flash'), false)
+  // 已知模型走目录里的 thinking 声明
+  assert.equal(resolveThinkingEnabled('minimax-agent'), false)
+  // 目录里已经没有 thinking 变体（2026-10-22 移除），名字回退规则单独验
   assert.equal(resolveThinkingEnabled('some-thinking-model'), true)
   assert.equal(resolveThinkingEnabled('plain'), false)
 })
@@ -373,12 +372,12 @@ await testAsync('HTTP 400 + 上下文超长 → CONTEXT_WINDOW_EXCEEDED', async 
 await testAsync('请求体：带上 model/stream/max_tokens/tools，且 max_tokens 来自内核预算', async () => {
   const fetchImpl = fakeFetch(sse(delta({ content: 'ok' }), delta({}, 'stop')))
   await collect(
-    'minimax-m3.1-flash',
+    'minimax-agent',
     { messages: [{ role: 'user', content: 'hi' }], maxTokens: 1234, tools: [{ name: 't', description: 'd' }] },
     fetchImpl,
   )
   const body = fetchImpl.calls[0].json
-  assert.equal(body.model, 'minimax-m3.1-flash')
+  assert.equal(body.model, 'minimax-agent')
   assert.equal(body.stream, true)
   assert.equal(body.max_tokens, 1234)
   assert.equal(body.tools[0].type, 'function')
@@ -387,7 +386,7 @@ await testAsync('请求体：带上 model/stream/max_tokens/tools，且 max_toke
 
 await testAsync('请求体：内核没给预算时回落到 defaultMaxTokens（后端缺省 4096 会截断长输出）', async () => {
   const fetchImpl = fakeFetch(sse(delta({ content: 'ok' }), delta({}, 'stop')))
-  await collect('minimax-m3.1-flash', { messages: [{ role: 'user', content: 'hi' }] }, fetchImpl)
+  await collect('minimax-agent', { messages: [{ role: 'user', content: 'hi' }] }, fetchImpl)
   // collect() 绑定的是 DEFAULTS（defaultMaxTokens = 32768）
   assert.equal(fetchImpl.calls[0].json.max_tokens, 32768)
 })
@@ -420,17 +419,17 @@ await testAsync('listModels / resolveModel 申报模态与上下文', async () =
   const adapter = new MiniMaxWebApiAdapter({}, null, { warn() {}, debug() {} })
   const models = await adapter.listModels(PROVIDER_ID)
   assert.equal(models.length, KNOWN_MODELS.length)
-  const flash = models.find((m) => m.id === 'minimax-m3.1-flash')
-  assert.deepEqual(flash.inputModalities, ['text', 'image'])
-  const resolved = await adapter.resolveModel(PROVIDER_ID, 'minimax-m3.1-flash', DEFAULTS)
+  const agent = models.find((m) => m.id === 'minimax-agent')
+  assert.deepEqual(agent.inputModalities, ['text', 'image'])
+  const resolved = await adapter.resolveModel(PROVIDER_ID, 'minimax-agent', DEFAULTS)
   assert.equal(resolved.context.contextWindow, 512000)
   assert.equal(resolved.defaultMaxTokens, 32768)
 })
 
 await testAsync('prepareCall 返回可调用的 stream', async () => {
   const adapter = new MiniMaxWebApiAdapter({ autoStart: false }, fakeManager, { warn() {}, debug() {} })
-  const prepared = await adapter.prepareCall(PROVIDER_ID, 'minimax-m3')
-  assert.equal(prepared.model.id, 'minimax-m3')
+  const prepared = await adapter.prepareCall(PROVIDER_ID, 'minimax-agent')
+  assert.equal(prepared.model.id, 'minimax-agent')
   assert.equal(typeof prepared.stream, 'function')
 })
 

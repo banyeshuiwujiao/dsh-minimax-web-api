@@ -16,7 +16,7 @@ import { MiniMaxWebApiAdapter } from '../lib/provider.js'
  *
  * 用法：
  *   node test/live_e2e.mjs                  # 默认模型 + 工具调用
- *   node test/live_e2e.mjs minimax-m3       # 指定模型
+ *   node test/live_e2e.mjs minimax-agent   # 指定模型（目前目录里只有这一个）
  */
 
 const model = process.argv[2] || 'minimax-agent'

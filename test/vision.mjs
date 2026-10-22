@@ -15,7 +15,7 @@
 
 import assert from 'node:assert/strict'
 
-import { DEFAULTS, MiniMaxWebApiAdapter } from '../lib/provider.js'
+import { DEFAULTS, KNOWN_MODELS, MiniMaxWebApiAdapter } from '../lib/provider.js'
 import { collectContent, formatOpenAiMessages } from '../lib/openai.js'
 import {
   attachmentRefOf,
@@ -228,7 +228,7 @@ async function runStream(options, { attachments, opts = {} } = {}) {
     )
     const chunks = []
     for await (const chunk of adapter.stream(
-      'minimax-m3.1-flash',
+      'minimax-agent',
       options,
       { ...DEFAULTS, autoStart: false, ...opts },
       { ensure: async () => ({ status: 'ok' }) },
@@ -308,7 +308,7 @@ await testAsync('适配器：没有 attachment 服务时告警并留占位，不
     )
     const chunks = []
     for await (const chunk of adapter.stream(
-      'minimax-m3.1-flash',
+      'minimax-agent',
       { messages: [{ role: 'user', content: [dshImageBlock()] }] },
       { ...DEFAULTS, autoStart: false },
       { ensure: async () => ({ status: 'ok' }) },
@@ -327,9 +327,14 @@ await testAsync('适配器：没有 attachment 服务时告警并留占位，不
 
 await testAsync('适配器：声明了视觉的模型才允许图片（minimax-agent 也要算）', async () => {
   const adapter = new MiniMaxWebApiAdapter({ autoStart: false }, null, { warn() {}, debug() {} })
-  for (const model of ['minimax-agent', 'minimax-m3.1-flash', 'minimax-m3.1-flash-thinking']) {
-    const info = await adapter.resolveModel('minimax-web-api', model)
-    assert.deepEqual(info.inputModalities, ['text', 'image'], `${model} 应当声明支持图片`)
+  // 目录里声明 image: true 的模型，对外都必须申报 ['text','image']。
+  // 2026-10-22 选择器精简后目录只剩 minimax-agent，这条断言因此尤其重要：
+  // 它是号池默认入口，漏了 image 就等于"默认模型看不见图"。
+  const visual = KNOWN_MODELS.filter((m) => m.image)
+  assert.ok(visual.some((m) => m.id === 'minimax-agent'), 'minimax-agent 必须声明视觉')
+  for (const model of visual) {
+    const info = await adapter.resolveModel('minimax-web-api', model.id)
+    assert.deepEqual(info.inputModalities, ['text', 'image'], `${model.id} 应当声明支持图片`)
   }
 })
 

@@ -57,10 +57,10 @@ try {
   // 真实内核 prepareCall：拿到的元数据必须是本插件申报的那一份。
   const prepared = await ctx.llm.prepareCall({
     provider: plugin.PROVIDER_ID,
-    model: 'minimax-m3.1-flash',
+    model: 'minimax-agent',
   })
   console.log('prepareCall.config:', JSON.stringify(prepared.config))
-  assert.equal(prepared.config.model, 'minimax-m3.1-flash')
+  assert.equal(prepared.config.model, 'minimax-agent')
   assert.equal(typeof prepared.stream, 'function')
 
   console.log('✅ 运行时镜像插件在真实 Cordis Context 中装配通过')

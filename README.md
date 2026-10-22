@@ -24,10 +24,12 @@
 
 ## 核心特性
 
-1. **直达模型选择器**：`ctx.llm.registerAdapter(['minimax-web-api'], adapter)`，可选模型：
+1. **直达模型选择器**：`ctx.llm.registerAdapter(['minimax-web-api'], adapter)`，当前只公布一个模型：
    - `minimax-agent`：默认对话模型（上游 `MiniMax-M3.1-Flash`）
-   - `minimax-m3.1-flash` / `minimax-m3.1-flash-thinking`：M3.1 Flash 及深度思考变体
-   - `minimax-m3` / `minimax-m3-thinking`：M3 及深度思考变体
+   - 2026-10-22 精简：`minimax-m3.1-flash` / `-thinking`、`minimax-m3` / `-thinking` 已从选择器移除。
+     前两条与 `minimax-agent` 的后端行为完全相同（`gateway.py` 只把 `upstream_model` 塞进请求体，
+     `upstream`/`variant` 两个字段只入库、只用于后台展示，不参与请求构造），所以移除不丢能力；
+     `minimax-m3` 系列是另一个上游模型（`MiniMax-M3`），要恢复就照后端目录把条目抄回 `KNOWN_MODELS`。
    - 模型 id 与后端 `app/records.py` 的 `builtin_models()` **逐字一致**——后端按 id 查目录并拒绝未知模型（不会静默替换），写错名字的代价是「能选但一调就 400」。
    - `minimax-image` 刻意不列：它是图像生成模型，走对话链路只会得到错误。
 2. **免手动启停**：调用时探活 `http://127.0.0.1:4555/health`，未起则自动拉起 `python run.py --host 127.0.0.1 --port 4555 --data-dir <dir>`；dispose 时按**进程树**回收（Windows `taskkill /T /F`），不留孤儿。
@@ -64,7 +66,16 @@ cd C:\Users\Admin\DeepSeek_Harness\dsh-client-config\plugins\dsh-minimax-web-api
 .\install.ps1
 ```
 
-`install.ps1` 是幂等的，顺序是故意的：配置自检 → smoke → 解析后端与 Python 环境 → 同步运行时镜像并逐文件比哈希。任何一步失败立刻停止，不留半成品。
+`install.ps1` 是幂等的，顺序是故意的：配置自检 → smoke → 解析后端与 Python 环境 → 校验运行时接线。任何一步失败立刻停止，不留半成品。
+
+接线本身是一次性动作，走 profile 的 `link:` 依赖（`node_modules/dsh-minimax-web-api` 是指回本目录的 junction，改代码重启即生效，不需要再同步）：
+
+```powershell
+cd C:\Users\Admin\.dsh\profiles\desktop
+pnpm add "dsh-minimax-web-api@link:C:/Users/Admin/DeepSeek_Harness/dsh-client-config/plugins/dsh-minimax-web-api"
+```
+
+手抄进 `node_modules` 的老办法已废弃：那样的目录在 pnpm 眼里是 extraneous，每次 `pnpm install` 都会被挪进 `.ignored`。
 
 首次（或换了机器）用 `-BackendDir` 指定一次后端位置，之后由指针文件接管：
 
