@@ -3,13 +3,22 @@
 # ============================================================================
 # 注意：仅作为 provider 路由接入模型选择器，不加入工具列表。
 #
+# 本文件是**本插件自带的 bundle patch**（package.json 的
+# dsh.bundle.patch 指向它）。它随插件一起被 DSH 读取：
+#
+#   · 启用/停用 = profile 的 dsh.profile.bundles 里有没有 dsh-minimax-web-api
+#     （插件页「已安装插件」右侧的开关改的就是那个列表）；
+#   · 本文件里的 config 是插件的**可移植默认值**。profile 的
+#     cordis.patch.yml 可以按 id 覆盖它（覆盖是整块替换，必须列全所有键）。
+#
 # 接入步骤：
-#   1. 执行 .\install.ps1 同步插件到 ~/.dsh/profiles/desktop/node_modules/dsh-minimax-web-api
-#      （install.ps1 会把本机后端目录与 Python 解释器写进指针 ~/.dsh/minimax2api.json，
-#       所以这里不用写绝对路径）
-#   2. 把下方 insert 块合进权威源 dsh-client-config\profiles\desktop\cordis.patch.yml
-#   3. 执行 python scripts\sync-profiles.py --profile desktop
-#   4. 重启 DeepSeek Harness.exe
+#   1. 执行 .\install.ps1（把本机后端目录与 Python 解释器写进指针
+#      ~/.dsh/minimax2api.json，并校验 node_modules 下是 junction）
+#   2. 确认 profile 的 dsh.profile.bundles 里列了 dsh-minimax-web-api
+#      （dsh plugin --profile desktop add link:<本目录> 会自动加）
+#   3. 重启 DeepSeek Harness.exe
+#
+# 停用本插件不会留下悬空的 provider 行：整段 insert 随 bundle 一起退出组合。
 # ============================================================================
 
 - insert:
