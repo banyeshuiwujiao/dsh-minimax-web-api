@@ -42,6 +42,9 @@
         # 上游连续无数据的容忍上限，超时按可重试的 TIMEOUT 中止。0 = 不设上限。
         # MiniMax 首个 token（尤其思考变体）可能很慢，给到 180s。
         streamIdleTimeoutMs: 180000
+        # 单张图片发给上游的字节上限（base64 之前）。内核的 attachment 服务按这个
+        # 目标挑最接近的压缩档：图片大了就降质，而不是原样发几 MB 上去。
+        maxRequestImageBytes: 4194304
         # 后端子进程输出落盘（超过 2MB 轮转 .1），便于事后取证；留空只留在内存尾部 200 行。
         logFile: '~/.dsh/logs/minimax-web-api.log'
         # 托管（默认）：stdio 走管道，插件可 tail 日志并在 dispose 时按进程树回收；

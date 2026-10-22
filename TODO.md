@@ -53,6 +53,58 @@
 
 ---
 
+## 2026-10-22 07:35-08:10 续跑结论：能跑通实际 session 了，视觉也修好了
+
+### 1. 之前"跑不通"的真正原因：插件**根本没装进运行时镜像**
+
+- 现象：`cordis.patch.yml` 里明明有 `dsh-minimax-web-api/provider`，
+  但 DeepSeek Harness 桌面客户端的模型选择器里**一个 MiniMax 模型都没有**。
+- 取证：`~/.dsh/profiles/desktop/node_modules/` 下只有 `dsh-deepseek-web-api`
+  与 `dsh-our-free-model`；`node_modules/.ignored/dsh-minimax-web-api` 躺着完整一份。
+  pnpm 把不在 `package.json` dependencies 里的包挪进 `.ignored`，
+  于是加载器解析 `dsh-minimax-web-api/provider` 时找不到包 → provider 从未注册。
+- 修法：跑 `install.ps1`（第 4 步会把 lib/scripts/package.json/README 拷回
+  `node_modules/dsh-minimax-web-api` 并逐文件比哈希）。
+  **教训：改完 `lib/` 必须 `install.ps1` + 重启客户端，否则跑的是旧代码或根本没跑。**
+- 验收：客户端里选出 `MiniMax M3.1 Flash`，跑真实回合成功（见下）。
+
+### 2. 视觉：三处断链，逐层修好
+
+| 层 | 原来 | 修法 |
+|---|---|---|
+| 内核 → 适配器 | 内核给的是**持久引用** `{type:'image', attachment:{…}}`，适配器没去取字节 | 新增 `lib/images.js`：用 `ctx.attachments.readImageRequest()` 取请求版本，转成 `data:` URL |
+| 适配器 → 反代 | `collectContent` 只认 `http(s)://`，`data:` URL 被当"非 URL"**丢掉** | `data:` 与 `http(s)` 都直接转发；工具结果里的图片也转发 |
+| 反代 → 上游 | 工具结果只取文本（`_text_of`），**图片被丢** | `tool_result` 带 image 时改成块列表；`data:` URL 拆成规范的 base64 source |
+
+- 上游本身没问题：实测 OpenAI `image_url`+`data:`、Anthropic `base64`、
+  Anthropic `url`+`data:`、`tool_result` 带图，**四种形状全部答对**。
+- 另一个坑：**`minimax-agent` 原来声明成纯文本**。它和 `minimax-m3.1-flash`
+  是同一个上游 `MiniMax-M3.1-Flash`（`app/records.py` 的 `builtin_models`），
+  声明错了会让内核把图片换成 `[image omitted because this model accepts text only]`
+  ——**默认模型反而成了唯一瞎的模型**。已改成 `image: true`。
+- 回归：`node test/vision.mjs`（16 例，全 hermetic）。
+
+### 3. 真实客户端实测（DeepSeek Harness.exe，模型 MiniMax M3.1 Flash）
+
+| 场景 | 结果 |
+|---|---|
+| 插件自动拉起后端（`autoStart: true`） | ✅ 4555 由客户端内拉起（PID 22956） |
+| **工具结果里的图**（`read_image` → 图片回灌） | ✅ 7s：「左半边：红色；右半边：蓝色；中间的圆形：黄色。」 |
+| **用户贴的图**（`@` 文件引用进用户消息） | ✅ 8s：同一句正确答案，且不需要调工具 |
+| 三个模型 id 带图 | ✅ `minimax-agent` / `minimax-m3.1-flash` / `minimax-m3` 全部 HIT |
+
+（图是一张左红右蓝、中间黄圆的三色图；颜色只可能来自像素。）
+
+### 4. 顺带发现的、本仓之外的漂移（**未动，等用户拍板**）
+
+- `dsh-client-config/profiles/desktop/cordis.patch.yml`（权威源，427 行）与
+  `~/.dsh/profiles/desktop/cordis.patch.yml`（运行时镜像，802 行）**已经漂移**：
+  镜像里有权威源没有的 magpie 模型（`codex/gpt-5.6-terra`、`copilot/gpt-6-astra` 等）
+  与不同的默认模型（镜像 `workbuddy/hy3`，权威源 `antigravity/gemini-3.8-flash`）。
+  跑 `sync-profiles.py` 会把镜像**整体重写**成权威源，等于丢掉镜像里更新的那批模型。
+  本次只对镜像做了外科手术式补 `maxRequestImageBytes`，没有跑 sync。
+
+---
 
 ## 0. 已经确认没问题的部分（别重复劳动）
 

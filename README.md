@@ -36,7 +36,15 @@
 5. **真实 token 计量**：请求带 `stream_options.include_usage`。反代的 `token_usage()` 会把 `input_tokens + cache_read_input_tokens + cache_creation_input_tokens` 折成真实 prompt 数——只读 `input_tokens` 会让开了 prompt cache 的长上下文看起来只有几十 token。拿不到真实值时才按真正上线的载荷估算，**绝不发 0** 让宿主误判水位。
 6. **稳定错误码**：401/403 `AUTH`、402 `QUOTA`、429 `RATE_LIMIT`（透传 `Retry-After`）、400/413/422 `INVALID_REQUEST`、上下文超长 `CONTEXT_WINDOW_EXCEEDED`、5xx `SERVER`、其余 `HTTP_<status>`；**号池为空报 `MISSING_CREDENTIAL`**（不可重试）——报成 `TRANSPORT` 会让内核白重试两轮并掩盖真正原因。用户点「停止」一律 `ABORTED`。
 7. **空回合不静默**：整轮无正文、无思考、无调用时报可重试的 `EMPTY_RESPONSE`，而不是发一个 `stop` 让 DSH 把回合判成「已完成」。
-8. **图片 URL 透传**：DSH 的 `image` / `image_url` / `input_image` 块会转成 OpenAI `image_url`，后端再转成 Anthropic `image` 块。**只支持 http(s) URL**——`data:` base64 会被后端当成 url source 发给上游而失败，插件显式告警丢弃，不静默变空串。
+8. **图片能真的被模型看见**（2026-10-21 修）：内核给适配器的图片**不是 URL**，而是持久引用
+   `{type:'image', attachment:{attachmentId, …}}`——字节要靠挂载的 attachment 服务
+   （`ctx.attachments.readImageRequest`）取。插件用 `lib/images.js` 把它解析成 `data:` URL，
+   再由 `lib/openai.js` 转成 OpenAI 的 `image_url`；`data:` 与 `http(s)` 都能直接转发
+   （反代会把 `image_url` 变成 Anthropic 的 image 块，实测上游照收）。
+   **工具结果里的图片也会转发**（`read_image` 的结果就是 `[文本信封, 图片块]`），
+   后端那一侧相应地让 `tool_result` 携带 image 块。
+   解析不了的图会换成一句占位文字并告警，**不会静默消失**——"模型看不见图却照样回答"
+   是最难查的一类故障。
 9. **`max_tokens` 必须传**：Anthropic Messages 的 `max_tokens` 是必填项，反代缺省只有 4096。内核给的预算（`options.maxTokens`，回落到 `defaultMaxTokens`）会真的传下去，否则长文件写入会被上游截断。
 10. **空闲超时**：上游连续 `streamIdleTimeoutMs`（默认 180s，MiniMax 首 token 尤其 thinking 可能很慢）不吐字节，按可重试的 `TIMEOUT` 中止，不无限挂着。
 11. **每轮一行统计**：`logger.debug` 输出 `ms / ttft / reasonChars / contentChars / toolCalls / usage / outcome`；配 `logFile` 后后端子进程输出落盘（>2MB 轮转 `.1`）。
@@ -415,6 +423,54 @@ Invoke-RestMethod -Method Post http://127.0.0.1:4555/admin/api/keepalive/sweep
 
 ---
 
+### 视觉读图（2026-10-21 实测并修复）
+
+**症状**：模型选择器里能选 MiniMax，文本回合也正常，但**贴图或让模型读图时，模型像没看见**——
+它会对着图给出头头是道却完全对不上的回答，而且**不报任何错**。
+
+**根因有三层，逐层都得通**：
+
+| 层 | 原来的行为 | 为什么坏 |
+|---|---|---|
+| 内核 → 适配器 | 内核给的是持久引用 `{type:'image', attachment:{…}}`，适配器从没去取字节 | 适配器不取，模型就永远看不见这张图 |
+| 适配器 → 反代 | `collectContent` 只认 `http(s)://`，`data:` URL 被当"非 URL"丢掉 | 本地图片的正常形态就是 `data:`，于是图片在插件这一层就没了 |
+| 反代 → 上游 | 工具结果只取文本（`_text_of`），图片被丢弃 | `read_image` 的结果正是 `[文本信封, 图片块]`，图片在反代这一层也没了 |
+
+**上游本身没问题**——实测四种形状全部正确识图（红/蓝/黄三色图，问三个颜色）：
+
+| 形状 | 结果 |
+|---|---|
+| OpenAI `image_url` + `data:` URL | ✅ 答对 |
+| Anthropic `base64` source | ✅ 答对 |
+| Anthropic `url` source + `data:` URL | ✅ 答对 |
+| Anthropic `tool_result` 里带 image 块 | ✅ 答对 |
+
+所以要修的是**插件与反代这两层**，不是上游。
+
+**修完之后的链路**：
+
+```
+内核 ImageBlock（持久引用）
+  → lib/images.js：ctx.attachments.readImageRequest() 取请求版本 → data: URL
+  → lib/openai.js：转成 OpenAI image_url（用户消息与工具结果都转）
+  → minimax2api：data: 拆成 Anthropic base64 source（tool_result 也带 image 块）
+  → MiniMax 上游：看得见
+```
+
+**三个容易再犯的点**：
+
+1. **`minimax-agent` 必须声明 `inputModalities: ['text','image']`**。它和 `minimax-m3.1-flash`
+   是同一个上游 `MiniMax-M3.1-Flash`（见后端 `app/records.py` 的 `builtin_models`），
+   声明成纯文本会让内核把图片换成 `[image omitted because this model accepts text only]`——
+   **默认模型反而成了唯一瞎的模型**。
+2. **`data:` URL 不能当"非 URL"丢掉**。它就是本地图片的正常形态。
+3. **解析失败要留占位文字**。静默丢图等于"用户贴了图、模型看不见却照样回答"，
+   事后从日志里完全看不出来。
+
+回归：`node test/vision.mjs`（16 个用例，全 hermetic）。
+
+---
+
 ## 配置项
 
 见 [`cordis.patch.yml`](./cordis.patch.yml)，每一项都有注释。要点：
@@ -426,6 +482,7 @@ Invoke-RestMethod -Method Post http://127.0.0.1:4555/admin/api/keepalive/sweep
 | `maxContextWindow` | `512000` | M3.1 Flash 标称 512K（可选 1M）。申报值决定内核压缩线 |
 | `defaultMaxTokens` | `32768` | 既向 DSH 申报单轮输出预留，也作为 `max_tokens` 传给后端 |
 | `streamIdleTimeoutMs` | `180000` | MiniMax 首 token 可能很慢，比 deepseek 那套的 120s 更宽 |
+| `maxRequestImageBytes` | `4194304` | 单张图片发给上游的字节上限。内核的 attachment 服务按这个目标挑最接近的压缩档，**降质而不是丢图** |
 | `strictBackend` | `true` | 为 `false` 时契约不符只告警不拒用 |
 | `dailyCredits` | `true` | 每日签到领积分（当天领过就跳过） |
 | `renewTokens` | `true` | 主动续期 1 小时有效的 OAuth token，并把被 401 退休的账号复位 |

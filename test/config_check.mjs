@@ -24,6 +24,7 @@ export const REQUIRED_KEYS = Object.freeze([
   'toolDescriptionMaxChars',
   'healthTtlMs',
   'streamIdleTimeoutMs',
+  'maxRequestImageBytes',
   'logFile',
   'detach',
   'killTreeOnDispose',
