@@ -1,17 +1,20 @@
 @echo off
 rem ============================================================================
-rem Claim the daily MiniMax credits (check-in) for the minimax2api account pool.
+rem Run the whole MiniMax account-pool maintenance chain by hand:
+rem   1. ensure_v2rayn_minimax_proxy.py  (repair the overseas egress rule)
+rem   2. keep_tokens_alive.py             (renew the 1-hour OAuth tokens)
+rem   3. claim_daily_credits.py          (claim today's credits, every region)
 rem
-rem Why a .cmd wrapper instead of putting the whole command line into the
-rem scheduled task: schtasks /TR quoting breaks on paths with spaces, and there
-rem would be no place to read the log. This file owns "what to run, where the
-rem log goes, what to do on failure"; the scheduled task only calls it.
+rem The real logic lives in the Python scripts next to this file; they reuse
+rem minimax2api's own signing/proxy code instead of re-implementing the protocol.
 rem
-rem The real logic is claim_daily_credits.py next to this file (Python). It
-rem reuses minimax2api's own signing/proxy code instead of re-implementing
-rem the protocol.
+rem AUTOMATION NOW LIVES IN THE PLUGIN: lib/credits.js runs the same three
+rem scripts on plugin startup and every 30 minutes after that. The Windows
+rem scheduled task that used to call this file was deleted on 2026-10-23.
+rem This file is kept as a manual one-shot entry point (it is the only place
+rem that owns the log file and the exit code).
 rem
-rem Run it by hand (same thing the task does):
+rem Run it by hand:
 rem     scripts\claim_daily_credits.cmd
 rem Read the log:
 rem     %USERPROFILE%\.dsh\logs\minimax-claim.log

@@ -494,13 +494,14 @@ await testAsync('保活器：当天积分已领过时，只跑续期、不再跑
       pythonPath: 'C:/py/python.exe',
       scriptPath: 'C:/p/claim.py',
       renewScriptPath: 'C:/p/renew.py',
+      proxyScriptPath: 'C:/p/proxy.py',
       serverDir: 'C:/srv',
     }),
   })
   const result = await keeper.runOnce('test')
   assert.equal(result.ok, true)
   // 续期每次都跑（token 只有 1 小时有效期）；积分当天领过就跳过。
-  assert.deepEqual(spawned, ['C:/p/renew.py'])
+  assert.deepEqual(spawned, ['C:/p/proxy.py', 'C:/p/renew.py'])
 })
 
 await testAsync('保活器：先续期再领积分，两个脚本都跑，成功后记下当天', async () => {
@@ -517,18 +518,66 @@ await testAsync('保活器：先续期再领积分，两个脚本都跑，成功
       pythonPath: 'C:/py/python.exe',
       scriptPath: 'C:/p/claim.py',
       renewScriptPath: 'C:/p/renew.py',
+      proxyScriptPath: 'C:/p/proxy.py',
       serverDir: 'C:/srv',
     }),
   })
   const result = await keeper.runOnce('test')
   assert.equal(result.ok, true)
-  assert.equal(spawned.length, 2)
-  assert.deepEqual(spawned.map((s) => s.args[0]), ['C:/p/renew.py', 'C:/p/claim.py'])
+  assert.equal(spawned.length, 3)
+  assert.deepEqual(spawned.map((s) => s.args[0]), ['C:/p/proxy.py', 'C:/p/renew.py', 'C:/p/claim.py'])
   assert.equal(spawned[0].python, 'C:/py/python.exe')
   // 后端目录要通过环境变量传给脚本（脚本自己也要能解析后端目录）
   assert.equal(spawned[0].env.MINIMAX2API_DIR, 'C:/srv')
   const saved = JSON.parse(files.get('state.json'))
   assert.equal(saved.days['2026-10-21'].ok, true)
+})
+
+await testAsync('保活器：先修 v2rayN 规则，再续期，再领积分', async () => {
+  const { io } = fakeStateIo()
+  const spawned = []
+  const keeper = createCreditKeeper({
+    stateFile: 'state.json',
+    home: '/home/x',
+    now: () => new Date(2026, 9, 21, 12, 0),
+    exists: () => true,
+    stateIo: io,
+    spawnImpl: (python, args) => { spawned.push(args[0]); return fakeChild(0) },
+    resolve: () => ({
+      pythonPath: 'C:/py/python.exe',
+      proxyScriptPath: 'C:/p/proxy.py',
+      scriptPath: 'C:/p/claim.py',
+      renewScriptPath: 'C:/p/renew.py',
+      serverDir: 'C:/srv',
+    }),
+  })
+  const result = await keeper.runOnce('test')
+  assert.equal(result.ok, true)
+  assert.deepEqual(spawned, ['C:/p/proxy.py', 'C:/p/renew.py', 'C:/p/claim.py'])
+})
+
+await testAsync('保活器：v2rayN 规则被补上（exit=2）时提醒要重启 v2rayN', async () => {
+  const { io } = fakeStateIo()
+  const warnings = []
+  const keeper = createCreditKeeper({
+    stateFile: 'state.json',
+    home: '/home/x',
+    now: () => new Date(2026, 9, 21, 12, 0),
+    exists: () => true,
+    stateIo: io,
+    logger: { warn: (m) => warnings.push(m), debug: () => {} },
+    spawnImpl: (python, args) => (args[0].endsWith('proxy.py') ? fakeChild(2, '已补上') : fakeChild(0)),
+    resolve: () => ({
+      pythonPath: 'C:/py/python.exe',
+      proxyScriptPath: 'C:/p/proxy.py',
+      scriptPath: 'C:/p/claim.py',
+      renewScriptPath: 'C:/p/renew.py',
+    }),
+  })
+  await keeper.runOnce('test')
+  assert.equal(warnings.length, 1)
+  assert.match(warnings[0], /v2rayN/)
+  assert.match(warnings[0], /重启/)
 })
 
 await testAsync('保活器：关掉 renewTokens 就不跑续期脚本', async () => {
@@ -546,10 +595,11 @@ await testAsync('保活器：关掉 renewTokens 就不跑续期脚本', async ()
       pythonPath: 'C:/py/python.exe',
       scriptPath: 'C:/p/claim.py',
       renewScriptPath: 'C:/p/renew.py',
+      proxyScriptPath: 'C:/p/proxy.py',
     }),
   })
   await keeper.runOnce('test')
-  assert.deepEqual(spawned, ['C:/p/claim.py'])
+  assert.deepEqual(spawned, ['C:/p/proxy.py', 'C:/p/claim.py'])
 })
 
 await testAsync('保活器：积分脚本失败不记成功（明天还能再领）', async () => {

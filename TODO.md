@@ -30,11 +30,13 @@
       实测：cn 的 `signin/status`、`signin/claim`、`credit/details`、`/config` **全部可用**，
       每日 400 积分（第 4 天 1000）。不领就是 402 `insufficient_balance_error`（errorCode 50113）。
       已在插件侧提供绕开它的入口：`scripts/claim_daily_credits.py`（见 README「每日积分（签到）」）。
-      **自动化已挂**：Windows 计划任务 `MiniMax Daily Credit Claim`，每天 09:05，
-      日志 `%USERPROFILE%\.dsh\logs\minimax-claim.log`（已实测触发一次，LastResult=0）。
+      **自动化**：插件自己的保活轮次（`lib/credits.js`，启动一次 + 每 30 分钟一轮）。
       **语义坑（已修）**：判断依据必须是 `claimed_today` 而不是"余额够不够"——
       签到按天计，余额没花光的日子跳过就断连续、第 4 天的 1000 分也拿不到。
       验收：连续两天不手动干预，模型请求仍能出字（积分不归零）。
+      → **2026-10-23 收尾**：后端那边也打了补丁（本地分支 `local/robust-token-recovery`
+      的补丁 3），CN 号不再被后端自己的签到服务跳过，控制台的「签到」按钮对国内号也生效；
+      Windows 计划任务 `MiniMax Daily Credit Claim` 已删除（自愈动作已搬进插件轮次）。
 - [x] **P0-7 海外区（`account.minimax.io`）的 agent 主机在本机不可用** → **已解决**。
       当时的实测与误判：`agent.minimax.io` 直连 `ConnectError`（README 说的"锁海外出口"），
       走本机 v2rayN 代理（`http://127.0.0.1:10808`）则 **307 跳到 `agent.minimaxi.com`**。

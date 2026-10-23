@@ -32,10 +32,10 @@ cn 部署**有**完整的签到服务，状态与领取端点都通：
 也会错过。所以判断依据是"今天领没领"，不是"余额够不够"——上游对当天已领是幂等的
 （返回 already），每天都调是安全的。
 
-已经挂上 Windows 计划任务（每天 09:05）：
-    schtasks /Query /TN "MiniMax Daily Credit Claim"
-    schtasks /Run   /TN "MiniMax Daily Credit Claim"     # 想立刻试一次
-日志：%USERPROFILE%\\.dsh\\logs\\minimax-claim.log
+自动化：插件自己的保活轮次（lib/credits.js）会跑这个脚本——客户端启动一次，
+之后每 30 分钟一轮；当天领过就幂等跳过（状态记在
+%USERPROFILE%\\.dsh\\minimax-web-api\\claim-state.json）。
+（Windows 计划任务 "MiniMax Daily Credit Claim" 已于 2026-10-23 删除。）
 
 后端目录解析顺序（与插件 lib/paths.js 一致）：
     环境变量 MINIMAX2API_DIR → 指针 ~/.dsh/minimax2api.json → 插件同级/常见位置

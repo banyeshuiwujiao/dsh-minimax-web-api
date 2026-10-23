@@ -196,8 +196,9 @@ python scripts\ensure_v2rayn_minimax_proxy.py --remove   # 拆掉
 ```
 
 退出码 `2` = "我补上了，但**需要重启 v2rayN** 才生效"。
-每日签到的计划任务会先跑这个检查（补规则），再领积分；补了当前生效的预设时，
-日志里会留一行 `[WARN] ... RESTART v2rayN to make it effective`。
+插件自己的保活轮次每 30 分钟先跑这个检查（补规则），再续期、再领积分；
+补了当前生效的预设时，插件日志里会留一行
+`minimax-web-api: v2rayN 的 minimax 海外代理规则被补上了，需要重启 v2rayN 才生效`。
 
 > 后端自己的 `upstream.proxy` 建议**留空**：国内账号直连即可，留空才不会因为
 > v2rayN 没开就整个后端不可用。海外账号靠上面那条 TUN 规则出海。
@@ -240,32 +241,40 @@ python scripts\ensure_v2rayn_minimax_proxy.py --remove   # 拆掉
 - 另外两件事与本插件无关：国内站网页版左下角活动卡片的手动签到，与这里的 API 签到等价；
   订阅用户活动期的"重置卡"（10/10–10/18，今天已过）在签到接口里没有对应字段。
 
-#### ⚠ 第三方后端的一个错误假设
+#### ⚠ 第三方后端的一个错误假设（**已在本机后端打补丁修掉**）
 
 `minimax2api` 自带的签到服务对大陆区账号**直接跳过**：
 
 ```python
-# app/signin.py（第三方仓，read-only）
+# app/signin.py（第三方仓上游）
 if account.region == REGION_CN:
     preflight.reason = "mainland region, no check-in service"
 ```
 
-这是作者的**假设**，不是上游事实。**cn 部署其实有完整的签到服务**，实测三个端点全通：
+这是作者的**假设**，不是上游事实。**cn 部署其实有完整的签到服务**，实测端点全通
+（2026-10-23 在本机 CN 号 `7771e5f1…` 上重新验证）：
 
 | 端点 | 作用 |
 |---|---|
 | `GET /minimax-cloud/api/v1/signin/status` | 7 天签到面板（每天 400 分，第 4 天 1000） |
 | `POST /minimax-cloud/api/v1/signin/claim` | 领取当日积分，返回 `points` |
+| `GET /minimax-cloud/api/v1/credit/details` | 积分明细（领取是否真的到账） |
 | `GET /matrix/api/v1/commerce/get_membership_info` | 余额（`total` / `free` / `purchased`） |
 | `GET /minimax-cloud/api/v1/config` | **必须先调**，否则上游"记录了已签到但永不发放积分" |
 
-这三个端点都走 `x-signature` / `yy` 签名（`x-signature = md5(second + 'I*7Cf%WZ#S&%1RlZJ&C2' + body)`），
+这些端点都走 `x-signature` / `yy` 签名（`x-signature = md5(second + 'I*7Cf%WZ#S&%1RlZJ&C2' + body)`），
 **顺序不能颠倒：先 `/config` 再 `claim`**。
+
+**2026-10-23 已在本地后端打掉这个跳过**（补丁 3，见后端仓的 `LOCAL-PATCHES.md`）：
+`app/signin.py` 的 `run_account()` 与 `refresh_credits()` 两处 region 判断都删了。
+所以现在**后端控制台自己的「签到」按钮对国内号也生效**，控制台不再显示"跳过"，
+而是显示真实的签到结果（`已签` / `OK` + 积分 + 余额）。
+上游自己的那条测试钉的正是这个错误行为，已一并改写。
 
 #### 领积分：用本插件自带的脚本
 
 签名、代理、错误分类都在第三方仓的 `app/upstream.py` 里，本插件不重复实现协议，
-只提供一个**绕开"大陆区跳过"判断**的入口：
+脚本直接复用后端那套客户端（所以 CN / 海外两个区走的是各自正确的 host）：
 
 ```powershell
 cd C:\Users\Admin\DeepSeek_Harness\dsh-client-config\plugins\dsh-minimax-web-api
@@ -276,12 +285,12 @@ C:\Users\Admin\DeepSeek_Harness\git-repo\minimax2api\.venv\Scripts\python.exe sc
 
 ```
 后端目录：C:\Users\Admin\DeepSeek_Harness\git-repo\minimax2api
-=== minimax-cn (region=cn) ===
-    余额 total=399.574 free=399.574 purchased=0.0 plan=/1
-    今天已领过（幂等跳过）
-=== minimax-global (region=global) ===
-    余额 total=399.878 free=399.878 purchased=0.0 plan=/1
-    今天已领过（幂等跳过）
+=== 7771e5f12ab7 (region=cn) ===
+    余额 total=400.0 free=400.0 purchased=0.0 plan=/1
+    签到面板：claimed_today=True
+=== 7a612de8920f (region=global) ===
+    余额 total=965.707 free=965.707 purchased=0.0 plan=/1
+    签到面板：claimed_today=True
 ```
 
 参数：
@@ -316,32 +325,33 @@ C:\Users\Admin\DeepSeek_Harness\git-repo\minimax2api\.venv\Scripts\python.exe sc
 浏览器端（勾协议、解滑块、填码、点登录）由 `captcha-slider-solve` 技能负责。
 #### 想让它自动每天跑
 
-**已经挂好了 Windows 计划任务**（每天 09:05，与后端自带签到调度同一时刻）：
-
-| 项 | 值 |
-|---|---|
-| 任务名 | `MiniMax Daily Credit Claim` |
-| 触发 | 每天 **09:05**（下一次：2026-10-22 09:05） |
-| 执行 | `cmd.exe /c "…\plugins\dsh-minimax-web-api\scripts\claim_daily_credits.cmd"` |
-| 运行身份 | 当前用户（`Admin`），仅在已登录时运行，不需要存密码 |
-| 错过补偿 | `StartWhenAvailable`：关机错过会在下次开机后补跑 |
-| 日志 | `%USERPROFILE%\.dsh\logs\minimax-claim.log`（>512KB 自动轮转成 `.1`） |
-
-任务实际跑**两步**：
+**插件自己就会签到**（随 DSH 客户端加载）：
+[lib/credits.js](lib/credits.js) 的保活器在插件启动时跑一轮，之后每 30 分钟复查一轮，
+每轮依次做三件事：
 
 1. `ensure_v2rayn_minimax_proxy.py` —— 检查/补齐 v2rayN 的「minimax 海外站走代理」规则
    （海外号要靠它才能出海，见上一节）；
-2. `claim_daily_credits.py` —— 给号池里**每个**账号领当日积分。
+2. `keep_tokens_alive.py` —— 给 1 小时有效的 OAuth token 续期，并把被 401 退休的账号复位；
+3. `claim_daily_credits.py` —— 给号池里**每个**账号领当日积分（**国内站、海外站都领**）。
+
+> 以前还有一个 Windows 计划任务 `MiniMax Daily Credit Claim`（每天 09:05）做同样的事，
+> 作为"客户端整天不开"的兜底。**2026-10-23 已删除**：客户端不开的时候本来也用不了
+> MiniMax，后端自带签到调度也是 09:05，两者时间重合没有额外价值；而计划任务的
+> `cmd.exe` 引号在带空格的路径上很容易坏，脚本本身又是 ASCII-only 的绕路产物。
+> v2rayN 规则自愈因此搬进了插件自己的复查轮次（上面第 1 步），没有丢。
+
+判定"今天领没领"看的是 `claimed_today`（**签到按天计**），不是"余额够不够"——
+上游对当天已领是幂等的（返回 already），每天都调是安全的。
+
+手工跑一次（跟插件跑的是同一套脚本）：
 
 ```powershell
-schtasks /Query /TN "MiniMax Daily Credit Claim"          # 看状态与下次运行
-schtasks /Run   /TN "MiniMax Daily Credit Claim"           # 想立刻试一次
+C:\Users\Admin\DeepSeek_Harness\git-repo\minimax2api\.venv\Scripts\python.exe scripts\claim_daily_credits.py
+C:\Users\Admin\DeepSeek_Harness\git-repo\minimax2api\.venv\Scripts\python.exe scripts\keep_tokens_alive.py --status
 ```
 
-包装脚本 `scripts\claim_daily_credits.cmd` 是 **ASCII-only** 的：cmd.exe 按系统 ANSI
-码页（这台机器是 GBK）读 `.cmd`，UTF-8 的中文注释会变成乱码并**连带把后面的行解析坏**
-（真踩过：整份脚本因为一行注释崩掉）。所以注释一律英文，脚本输出用
-`PYTHONIOENCODING=utf-8` 强制 UTF-8 落盘。
+如果想看插件自己的运行日志：`~/.dsh/logs/minimax-web-api.log`（客户端日志里）
+与 `~/.dsh/minimax-web-api/claim-state.json`（每天的领取状态）。
 
 #### 每天都要领，不看余额
 
@@ -352,9 +362,9 @@ schtasks /Run   /TN "MiniMax Daily Credit Claim"           # 想立刻试一次
 （脚本早先的默认是"余额 ≥ 1 就跳过"，那样在余额没花光的第二天会**白跑一天并断签**，
 已改成看 `claimed_today`；`--min-balance` 保留为可选的额外保护，默认 0 = 不设限。）
 
-如果你更想让**第三方后端自己的调度器**来领（而不是计划任务），就要给
-`app/signin.py` 打一个本地补丁去掉它对 CN 的跳过——代价是克隆仓与上游产生一处本地差异
-（见 `TODO.md` 的 P0-6）。
+**后端自己的调度器也已经能签 CN 号了**（2026-10-23 打补丁，见上文「已在本机后端打补丁修掉」）：
+后端每天 09:05 的签到调度（`signin.enabled`）现在**国内号、海外号一起领**，
+控制台上的「签到」按钮也对国内号生效，不再显示"跳过"。
 
 ### 余额不足长什么样
 
@@ -412,10 +422,10 @@ python scripts\keep_tokens_alive.py --force   # 全部续期 + 复位
 Invoke-RestMethod -Method Post http://127.0.0.1:4555/admin/api/keepalive/sweep
 ```
 
-#### 上游那两个洞已经打了本地补丁
+#### 上游那些洞已经打了本地补丁
 
 `git-repo/minimax2api` 现在停在**本地分支** `local/robust-token-recovery`，
-比上游多一个提交（`main` 仍与上游一致；push 通道已锁死，不推任何远端）。
+比上游多三个提交（`main` 仍与上游一致；push 通道已锁死，不推任何远端）。
 补丁内容与理由见仓里的 **`LOCAL-PATCHES.md`**，一句话版：
 
 | 上游的洞 | 补丁 |
@@ -423,9 +433,11 @@ Invoke-RestMethod -Method Post http://127.0.0.1:4555/admin/api/keepalive/sweep
 | `renew_account` 先写库后 `print` 报告结果；stdout 一断就抛，被当成"续期失败" → **好账号被退休**；sweep 的错误处理也 `print` → **sweep 一起死** | `print` → `_log()`（吞写失败），日志不再能打断控制流 |
 | `pool._record_failure` 把 renewer 抛的异常当成"凭据死了" → 退休 | 异常只说明**没判定** → 走冷却，不退休 |
 | sweep 只管"快到期" → 被误退休的账号没有回来的路 | 可续期且 `status=invalid` 的账号也纳入本轮，续期成功即复位 |
+| **签到服务假设"大陆区无签到服务"，把 CN 号直接跳过** → CN 号余额停在 0，每条请求都 402 | 删掉 `run_account()` / `refresh_credits()` 里的 region 判断，CN 号照常签到 |
 
-验证：`tests/test_local_patches.py`（4 例）+ 上游自带 `tests/test_bridge.py`（97 例）
-= **101 passed**；另外在活着的号池上**复现过原事故**（把 token 换成坏的 → 上游 401），
+验证：`tests/test_local_patches.py`（4 例）+ `tests/test_local_image_patch.py`（8 例）
++ `tests/test_local_cn_signin_patch.py`（4 例）+ 上游自带 `tests/test_bridge.py`（97 例）
+= **113 passed**；另外在活着的号池上**复现过原事故**（把 token 换成坏的 → 上游 401），
 结果是账号**保持 active**、token 被续上、请求继续出字。
 
 > 后端进程本身也要注意：**别把它的 stdout 接到会断的管道上**。本机那次事故的触发点
@@ -495,9 +507,9 @@ Invoke-RestMethod -Method Post http://127.0.0.1:4555/admin/api/keepalive/sweep
 | `streamIdleTimeoutMs` | `180000` | MiniMax 首 token 可能很慢，比 deepseek 那套的 120s 更宽 |
 | `maxRequestImageBytes` | `4194304` | 单张图片发给上游的字节上限。内核的 attachment 服务按这个目标挑最接近的压缩档，**降质而不是丢图** |
 | `strictBackend` | `true` | 为 `false` 时契约不符只告警不拒用 |
-| `dailyCredits` | `true` | 每日签到领积分（当天领过就跳过） |
+| `dailyCredits` | `true` | 每日签到领积分（当天领过就跳过）。**国内站、海外站都领** |
 | `renewTokens` | `true` | 主动续期 1 小时有效的 OAuth token，并把被 401 退休的账号复位 |
-| `poolIntervalMs` | `1800000` | 保活复查间隔（30 分钟）。0 = 只在插件启动时跑一次 |
+| `poolIntervalMs` | `1800000` | 保活复查间隔（30 分钟）。每轮依次：修 v2rayN 规则 → 续期 → 领积分。0 = 只在插件启动时跑一次 |
 | `creditStateFile` | `~/.dsh/minimax-web-api/claim-state.json` | 每日领取状态（避免同一天重复跑） |
 
 ---
